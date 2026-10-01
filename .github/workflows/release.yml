@@ -1,0 +1,54 @@
+name: Release
+
+# Push a tag like v1.0.0 to build every architecture and create a draft
+# release with the zip files Notepad++ Plugin Admin needs. Check the draft,
+# then publish it.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Check that the tag matches the version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path src/Version.h -Pattern 'SCROLLMARKS_VERSION_STRING "([^"]+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} does not match version $version in src/Version.h" }
+
+      - name: Build
+        shell: pwsh
+        run: |
+          foreach ($platform in "x64", "Win32", "ARM64") {
+            msbuild ScrollMarks.vcxproj -m -p:Configuration=Release -p:Platform=$platform
+            if ($LASTEXITCODE -ne 0) { throw "Build failed for $platform" }
+          }
+
+      - name: Package
+        shell: pwsh
+        run: ./scripts/package.ps1
+
+      - name: Create draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $sums = Get-Content dist/SHA256SUMS.txt
+          $notes = @(
+            "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md) for the changes."
+            ""
+            "Install: extract the zip for your Notepad++ architecture into ``plugins\ScrollMarks\`` and restart Notepad++."
+            ""
+            "SHA-256:"
+            '```'
+          ) + $sums + @('```')
+          $notes -join "`n" | Set-Content -Encoding utf8 dist/notes.md
+          gh release create "${{ github.ref_name }}" (Get-ChildItem dist/*.zip).FullName dist/SHA256SUMS.txt --draft --title "ScrollMarks ${{ github.ref_name }}" --notes-file dist/notes.md
