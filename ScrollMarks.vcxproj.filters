@@ -16,6 +16,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\MarkerBar.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\MarkLayers.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\MarkScan.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\NppPreferences.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\OccurrenceSearch.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\Plugin.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -23,6 +25,7 @@
     <ClCompile Include="src\PreviewWindow.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\Settings.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\SettingsDialog.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\Strings.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="npp\Notepad_plus_msgs.h"><Filter>Notepad++</Filter></ClInclude>
@@ -32,6 +35,8 @@
     <ClInclude Include="src\Dpi.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\Editor.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\MarkerBar.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\MarkLayers.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\MarkScan.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\NppPreferences.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\OccurrenceSearch.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\Plugin.h"><Filter>Header Files</Filter></ClInclude>
@@ -39,6 +44,7 @@
     <ClInclude Include="src\resource.h"><Filter>Resource Files</Filter></ClInclude>
     <ClInclude Include="src\Settings.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\SettingsDialog.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\Strings.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\Version.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>

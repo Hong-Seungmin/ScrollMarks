@@ -10,6 +10,7 @@
 
 #include <windows.h>
 #include <string>
+#include <vector>
 
 // A switch that either follows Notepad++ or is forced on or off.
 enum class Choice { FollowNotepad, On, Off };
@@ -18,52 +19,87 @@ inline bool resolve(Choice choice, bool notepadValue) {
 	return choice == Choice::FollowNotepad ? notepadValue : choice == Choice::On;
 }
 
-// A color that is either derived from the Notepad++ theme or fixed.
+enum class Language { FollowNotepad, English, Korean };
+
+// Where a kind of marker sits horizontally in the bar.
+enum class Position { Left, Center, Right };
+
+// A color that is either automatic or fixed.
 struct ColorChoice {
 	bool automatic = true;
 	COLORREF color = RGB(0, 0, 0);
-	bool operator==(const ColorChoice& other) const { return automatic == other.automatic && color == other.color; }
 };
 
-// A number that is either derived from Notepad++ or Windows, or fixed.
+// A number that is either automatic or fixed.
 struct NumberChoice {
 	bool automatic = true;
 	int value = 0;
-	bool operator==(const NumberChoice& other) const { return automatic == other.automatic && value == other.value; }
 };
+
+// How one kind of marker is drawn.
+struct LayerSettings {
+	bool enabled = true;
+	Position position = Position::Center;
+	int widthPercent = 100;   // of the bar width
+	ColorChoice color;
+};
+
+constexpr int kHistoryStates = 4;   // modified, saved, reverted to original, reverted to modified
+constexpr int kStyleTokens = 5;
 
 // User settings, stored in plugins\Config\ScrollMarks.ini.
 struct Settings {
+	// General
 	bool enabled = true;
+	Language language = Language::FollowNotepad;
+	NumberChoice barWidth;                 // pixels at 96 DPI, automatic = scrollbar width
+	int minimumMarkerHeight = 2;           // pixels at 96 DPI
+	ColorChoice backgroundColor;
 
-	// Which text is marked
-	bool followSmartHighlighting = true;   // only when Notepad++ smart highlighting is on
+	// Occurrences of the selected text
+	LayerSettings occurrences{ true, Position::Center, 28, {} };
+	LayerSettings current{ true, Position::Center, 100, {} };
+	bool followSmartHighlighting = true;
 	Choice matchCase = Choice::FollowNotepad;
 	Choice wholeWord = Choice::FollowNotepad;
-	bool useWordAtCaret = false;           // mark the word at the caret when nothing is selected
-	bool markLargeFiles = false;           // ignore Notepad++'s large file restriction
-	int minimumLength = 1;                 // characters
+	bool useWordAtCaret = false;
+	bool markLargeFiles = false;
+	int minimumLength = 1;
 	int maximumMarkers = 100000;           // 0 = no limit
 
-	// How markers look (pixels are at 96 DPI and scaled with the monitor)
-	NumberChoice barWidth;                 // automatic = half the scrollbar width
-	int minimumMarkerHeight = 2;
-	ColorChoice occurrenceColor;           // automatic = Notepad++ smart highlighting color
-	ColorChoice currentColor;              // automatic = caret color
-	ColorChoice backgroundColor;           // automatic = scrollbar track color
+	// Other marks
+	LayerSettings changeHistory{ true, Position::Left, 22, {} };
+	ColorChoice historyColors[kHistoryStates];
+	LayerSettings bookmarks{ true, Position::Right, 22, {} };
+	LayerSettings findMarks{ true, Position::Center, 42, {} };
+	LayerSettings styleTokens{ true, Position::Center, 56, {} };
+	ColorChoice tokenColors[kStyleTokens];
+	LayerSettings otherIndicators{ false, Position::Center, 56, {} };
+	std::wstring otherIndicatorList;       // "9, 19"
 
-	// Clicking
-	bool selectOnClick = true;
+	// Caret line
+	LayerSettings caretLine{ true, Position::Center, 100, {} };
+	int caretLineThickness = 2;            // pixels at 96 DPI
+
+	// Click and keys
+	bool moveCaretOnClick = false;
 	bool centerOnClick = true;
+	bool flashLine = true;
+	int flashDuration = 600;               // milliseconds
+	ColorChoice flashColor;
 	bool scrollOnEmptyClick = true;
+	bool wrapAround = true;
+	bool centerOnJump = true;
 
 	// Hover preview
 	bool previewEnabled = true;
-	int previewContextLines = 3;           // lines above and below
+	int previewContextLines = 3;
 	NumberChoice previewDelay;             // milliseconds, automatic = Windows mouse hover time
-	int previewWidthPercent = 60;          // of the editor width
+	int previewWidthPercent = 60;
 
 	void load(const std::wstring& file);
 	void save(const std::wstring& file) const;
 	void clamp();
+
+	std::vector<int> otherIndicatorNumbers() const;
 };

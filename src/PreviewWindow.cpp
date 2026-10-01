@@ -13,6 +13,7 @@
 #include <string>
 
 #include "Dpi.h"
+#include "MarkLayers.h"
 
 namespace {
 
@@ -22,13 +23,6 @@ constexpr int kLastIndicator = 35;   // INDICATOR_MAX
 COLORREF blend(COLORREF from, COLORREF to, int percent) {
 	auto mix = [percent](int a, int b) { return a + (b - a) * percent / 100; };
 	return RGB(mix(GetRValue(from), GetRValue(to)), mix(GetGValue(from), GetGValue(to)), mix(GetBValue(from), GetBValue(to)));
-}
-
-std::wstring withSeparators(size_t value) {
-	std::wstring digits = std::to_wstring(value);
-	for (int i = static_cast<int>(digits.size()) - 3; i > 0; i -= 3)
-		digits.insert(static_cast<size_t>(i), L",");
-	return digits;
 }
 
 } // namespace
@@ -67,7 +61,11 @@ bool PreviewWindow::create(HINSTANCE module, HWND owner) {
 	m_view.call(SCI_SETMOUSEDWELLTIME, SC_TIME_FOREVER);
 	m_view.call(SCI_SETENDATLASTLINE, 0);   // lets the last lines of a file be centered too
 	m_view.call(SCI_SETLAYOUTCACHE, SC_CACHE_PAGE);
-	m_view.call(SCI_SETMARGINTYPEN, 0, SC_MARGIN_NUMBER);
+	// Real line numbers are set as margin text, because the copy starts at line 1
+	m_view.call(SCI_SETMARGINTYPEN, 0, SC_MARGIN_RTEXT);
+	m_view.call(SCI_SETUNDOCOLLECTION, 0);
+	m_view.call(SCI_SETEOLMODE, SC_EOL_LF);
+	m_view.call(SCI_SETREADONLY, 1);
 	for (int margin = 1; margin < 5; ++margin)
 		m_view.call(SCI_SETMARGINWIDTHN, static_cast<uptr_t>(margin), 0);
 	return true;
@@ -93,11 +91,7 @@ void PreviewWindow::hide() {
 	if (m_visible)
 		::ShowWindow(m_window, SW_HIDE);
 	m_visible = false;
-	if (m_document) {
-		// Give the document back so closing it in Notepad++ really frees it
-		m_view.call(SCI_SETDOCPOINTER, 0, 0);
-		m_document = 0;
-	}
+	m_contentValid = false;   // the editor may change before the next show
 	m_source = nullptr;
 }
 
@@ -192,11 +186,6 @@ void PreviewWindow::show(const Editor& source, const Request& request) {
 	if (!m_window || !source.hwnd())
 		return;
 
-	const sptr_t document = source.document();
-	if (document != m_document) {
-		m_view.call(SCI_SETDOCPOINTER, 0, document);   // adds a reference to the document
-		m_document = document;
-	}
 	const sptr_t lexer = source.call(SCI_GETLEXER);
 	if (!m_appearanceValid || m_source != source.hwnd() || lexer != m_lexer) {
 		copyAppearance(source);
@@ -208,10 +197,13 @@ void PreviewWindow::show(const Editor& source, const Request& request) {
 	const UINT dpi = Dpi::forWindow(source.hwnd());
 	updateFont(dpi);
 
-	// Line numbers wide enough for the last line of the document
-	const std::string widest = "_" + std::to_string(std::max<Sci_Position>(10, source.lineCount()));
-	const int numberWidth = static_cast<int>(m_view.call(SCI_TEXTWIDTH, STYLE_LINENUMBER, widest.c_str())) + Dpi::scale(4, dpi);
-	m_view.call(SCI_SETMARGINWIDTHN, 0, numberWidth);
+	// Moving along the same marker only moves the window
+	const sptr_t document = source.document();
+	const bool sameContent = m_contentValid && document == m_document && request.occurrence.start == m_shown.start &&
+		request.occurrence.end == m_shown.end && request.contextLines == m_shownContext;
+	if (!sameContent)
+		fillContent(source, request);
+	const int numberWidth = m_numberWidth;
 
 	// Size: the lines around the occurrence plus the caption
 	const int lines = 2 * request.contextLines + 1;
@@ -240,22 +232,22 @@ void PreviewWindow::show(const Editor& source, const Request& request) {
 	::GetClientRect(m_window, &client);
 	::MoveWindow(m_viewWindow, 0, m_captionHeight, client.right, std::max<int>(0, client.bottom - m_captionHeight), FALSE);
 
-	// Content: the preview view has no folds and no wrapping, so a document
-	// line is a display line.
-	const Occurrence& occurrence = request.occurrence;
-	const Sci_Position line = m_view.lineFromPosition(occurrence.start);
-	m_view.call(SCI_SETSEL, static_cast<uptr_t>(occurrence.start), occurrence.end);
-	m_view.call(SCI_SETFIRSTVISIBLELINE, static_cast<uptr_t>(std::max<Sci_Position>(0, line - request.contextLines)));
-	m_view.call(SCI_SETXOFFSET, 0);
-	const int textRight = client.right;
-	const int matchRight = static_cast<int>(m_view.call(SCI_POINTXFROMPOSITION, 0, occurrence.end));
-	if (matchRight > textRight - Dpi::scale(16, dpi)) {
-		const int matchLeft = static_cast<int>(m_view.call(SCI_POINTXFROMPOSITION, 0, occurrence.start));
-		m_view.call(SCI_SETXOFFSET, static_cast<uptr_t>(std::max(0, matchLeft - numberWidth - (textRight - numberWidth) / 3)));
+	if (!sameContent) {
+		// The copy holds only the lines to show, so it starts at the top
+		const Sci_Position start = std::max<Sci_Position>(0, toPreview(request.occurrence.start));
+		const Sci_Position end = std::max(start, toPreview(request.occurrence.end));
+		m_view.call(SCI_SETSEL, static_cast<uptr_t>(start), end);
+		m_view.call(SCI_SETFIRSTVISIBLELINE, 0);
+		m_view.call(SCI_SETXOFFSET, 0);
+		const int textRight = client.right;
+		const int matchRight = static_cast<int>(m_view.call(SCI_POINTXFROMPOSITION, 0, end));
+		if (matchRight > textRight - Dpi::scale(16, dpi)) {
+			const int matchLeft = static_cast<int>(m_view.call(SCI_POINTXFROMPOSITION, 0, start));
+			m_view.call(SCI_SETXOFFSET, static_cast<uptr_t>(std::max(0, matchLeft - numberWidth - (textRight - numberWidth) / 3)));
+		}
 	}
 
-	m_caption = L"Line " + withSeparators(static_cast<size_t>(line) + 1) + L"    " + withSeparators(request.number) +
-		L" of " + withSeparators(request.total) + (request.totalIsLimited ? L"+" : L"");
+	m_caption = request.caption;
 
 	::InvalidateRect(m_window, nullptr, TRUE);
 	::InvalidateRect(m_viewWindow, nullptr, FALSE);
@@ -264,6 +256,111 @@ void PreviewWindow::show(const Editor& source, const Request& request) {
 		m_visible = true;
 	}
 	::RedrawWindow(m_window, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+}
+
+void PreviewWindow::fillContent(const Editor& source, const Request& request) {
+	constexpr Sci_Position kMaximumLineBytes = 4096;   // long lines are cut, the preview is narrow anyway
+	const Occurrence& occurrence = request.occurrence;
+	const Sci_Position lineCount = source.lineCount();
+	const Sci_Position line = source.lineFromPosition(occurrence.start);
+	const Sci_Position first = std::max<Sci_Position>(0, line - request.contextLines);
+	// Keep the occurrence's line at the same height: blank lines above it at the top of the file
+	const Sci_Position padding = request.contextLines - (line - first);
+	const Sci_Position last = std::min<Sci_Position>(lineCount - 1, line + request.contextLines);
+	const Sci_Position length = source.length();
+	const Sci_Position rangeEnd = last + 1 < lineCount ? source.call(SCI_POSITIONFROMLINE, static_cast<uptr_t>(last + 1)) : length;
+
+	// Lines that were never on screen may not be styled yet
+	const Sci_Position styled = source.call(SCI_GETENDSTYLED);
+	if (styled < rangeEnd)
+		source.call(SCI_COLOURISE, static_cast<uptr_t>(styled), rangeEnd);
+
+	std::string text;
+	std::string styles;
+	m_segments.clear();
+	for (Sci_Position i = 0; i < padding; ++i) {
+		text += '\n';
+		styles += static_cast<char>(STYLE_DEFAULT);
+	}
+	for (Sci_Position l = first; l <= last; ++l) {
+		const Sci_Position start = source.call(SCI_POSITIONFROMLINE, static_cast<uptr_t>(l));
+		const Sci_Position lineEnd = source.call(SCI_GETLINEENDPOSITION, static_cast<uptr_t>(l));
+		Sci_Position end = std::min(lineEnd, start + kMaximumLineBytes);
+		if (l == line)
+			end = std::min(lineEnd, std::max(end, occurrence.end + 1024));
+		m_segments.push_back({ start, end, static_cast<Sci_Position>(text.size()) });
+		text += source.text(start, end);
+		for (Sci_Position p = start; p < end; ++p)
+			styles += static_cast<char>(source.call(SCI_GETSTYLEAT, static_cast<uptr_t>(p)) & 0xFF);
+		text += '\n';
+		styles += static_cast<char>(lineEnd < length ? source.call(SCI_GETSTYLEAT, static_cast<uptr_t>(lineEnd)) & 0xFF : STYLE_DEFAULT);
+	}
+
+	// The preview's own document: same encoding and tabs, then text and styles
+	m_view.call(SCI_SETREADONLY, 0);
+	m_view.call(SCI_CLEARALL);
+	m_view.call(SCI_SETCODEPAGE, static_cast<uptr_t>(source.call(SCI_GETCODEPAGE)));
+	m_view.call(SCI_SETTABWIDTH, static_cast<uptr_t>(source.call(SCI_GETTABWIDTH)));
+	m_view.call(SCI_ADDTEXT, text.size(), text.data());
+	m_view.call(SCI_STARTSTYLING, 0, 0);
+	m_view.call(SCI_SETSTYLINGEX, styles.size(), styles.data());
+
+	// Indicators of those lines: find marks, style tokens, links, spelling...
+	const Sci_Position copyStart = m_segments.empty() ? 0 : m_segments.front().sourceStart;
+	for (int indicator = 0; indicator <= kLastIndicator; ++indicator) {
+		const uptr_t number = static_cast<uptr_t>(indicator);
+		Sci_Position position = copyStart;
+		while (position < rangeEnd) {
+			const Sci_Position runEnd = source.call(SCI_INDICATOREND, number, position);
+			if (runEnd <= position)
+				break;
+			const int value = static_cast<int>(source.call(SCI_INDICATORVALUEAT, number, position));
+			if (value)
+				fillIndicator(indicator, value, position, std::min(runEnd, rangeEnd));
+			position = runEnd;
+		}
+	}
+	// ...and every occurrence of the searched text, drawn like smart highlighting
+	for (const Occurrence& highlight : request.highlights)
+		fillIndicator(kSmartHighlightIndicator, 1, highlight.start, highlight.end);
+	m_view.call(SCI_SETREADONLY, 1);
+
+	// The editor's line numbers in the margin
+	for (size_t i = 0; i < m_segments.size(); ++i) {
+		const uptr_t previewLine = static_cast<uptr_t>(padding) + i;
+		const std::string number = std::to_string(first + static_cast<Sci_Position>(i) + 1);
+		m_view.call(SCI_MARGINSETTEXT, previewLine, number.c_str());
+		m_view.call(SCI_MARGINSETSTYLE, previewLine, STYLE_LINENUMBER);
+	}
+	const UINT dpi = Dpi::forWindow(source.hwnd());
+	const std::string widest = "_" + std::to_string(std::max<Sci_Position>(10, last + 1));
+	m_numberWidth = static_cast<int>(m_view.call(SCI_TEXTWIDTH, STYLE_LINENUMBER, widest.c_str())) + Dpi::scale(6, dpi);
+	m_view.call(SCI_SETMARGINWIDTHN, 0, m_numberWidth);
+
+	m_document = source.document();
+	m_shown = occurrence;
+	m_shownContext = request.contextLines;
+	m_contentValid = true;
+}
+
+Sci_Position PreviewWindow::toPreview(Sci_Position position) const {
+	for (const Segment& segment : m_segments) {
+		if (position >= segment.sourceStart && position <= segment.sourceEnd)
+			return segment.previewStart + (position - segment.sourceStart);
+	}
+	return -1;
+}
+
+void PreviewWindow::fillIndicator(int indicator, int value, Sci_Position start, Sci_Position end) {
+	for (const Segment& segment : m_segments) {
+		const Sci_Position from = std::max(start, segment.sourceStart);
+		const Sci_Position to = std::min(end, segment.sourceEnd);
+		if (from >= to)
+			continue;
+		m_view.call(SCI_SETINDICATORCURRENT, static_cast<uptr_t>(indicator));
+		m_view.call(SCI_SETINDICATORVALUE, static_cast<uptr_t>(value));
+		m_view.call(SCI_INDICATORFILLRANGE, static_cast<uptr_t>(segment.previewStart + (from - segment.sourceStart)), to - from);
+	}
 }
 
 void PreviewWindow::paintCaption(HDC dc) const {

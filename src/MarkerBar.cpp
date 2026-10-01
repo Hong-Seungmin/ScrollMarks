@@ -15,6 +15,7 @@
 
 #include "Dpi.h"
 #include "Plugin.h"
+#include "Strings.h"
 
 namespace {
 
@@ -22,8 +23,22 @@ constexpr UINT_PTR kSubclassId = 0x534D4252;   // "SMBR"
 constexpr Sci_Position kMaximumTextBytes = 1024;
 constexpr UINT kSelectionDelay = 15;           // coalesces bursts of selection changes
 constexpr UINT kEditDelay = 250;               // waits for a pause in typing
-constexpr UINT kSearchInterval = 1;            // next slice as soon as the message queue is idle
-constexpr double kSearchBudget = 6.0;          // milliseconds of searching per slice
+constexpr UINT kIndicatorDelay = 150;          // indicators change in bursts too
+constexpr UINT kMarkerDelay = 100;
+constexpr UINT kSliceInterval = 1;             // next slice as soon as the message queue is idle
+constexpr double kSliceBudget = 6.0;           // milliseconds of work per slice
+
+std::wstring withSeparators(size_t value) {
+	std::wstring digits = std::to_wstring(value);
+	for (int i = static_cast<int>(digits.size()) - 3; i > 0; i -= 3)
+		digits.insert(static_cast<size_t>(i), L",");
+	return digits;
+}
+
+// Layers a click or hover can hit, from the top
+constexpr Layer kHitOrder[] = {
+	LayerCurrent, LayerOccurrences, LayerFindMarks, LayerStyleTokens, LayerOtherIndicators, LayerBookmarks, LayerChangeHistory,
+};
 
 } // namespace
 
@@ -56,8 +71,10 @@ void MarkerBar::detach() {
 	m_editor.attach(nullptr);
 	::SetWindowPos(scintilla, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 	m_search.reset();
+	m_scan.clear();
 	m_lines.clear();
-	m_rows.clear();
+	for (auto& rows : m_rows)
+		rows.clear();
 	m_layoutValid = false;
 }
 
@@ -71,10 +88,10 @@ bool MarkerBar::shown() const {
 	return attached() && m_plugin->settings().enabled;
 }
 
-bool MarkerBar::active() const {
+bool MarkerBar::occurrencesActive() const {
 	const Settings& settings = m_plugin->settings();
 	const NppPreferences& preferences = m_plugin->preferences();
-	if (!settings.enabled)
+	if (!settings.enabled || !settings.occurrences.enabled)
 		return false;
 	if (settings.followSmartHighlighting && !preferences.smartHighlighting)
 		return false;
@@ -91,8 +108,16 @@ UINT MarkerBar::dpi() const {
 int MarkerBar::barWidth() const {
 	const UINT currentDpi = dpi();
 	const NumberChoice& width = m_plugin->settings().barWidth;
-	const int pixels = width.automatic ? Dpi::systemMetric(SM_CXVSCROLL, currentDpi) / 2 : Dpi::scale(width.value, currentDpi);
+	const int pixels = width.automatic ? Dpi::systemMetric(SM_CXVSCROLL, currentDpi) : Dpi::scale(width.value, currentDpi);
 	return std::clamp(pixels, 2, Dpi::scale(64, currentDpi));
+}
+
+void MarkerBar::stopTimers() {
+	if (!m_plugin)
+		return;
+	for (TimerKind kind : { EvaluateTimer, SearchTimer, HoverTimer, ScanDelayTimer, ScanTimer })
+		m_plugin->killTimer(m_index, kind);
+	m_editPending = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +260,7 @@ LRESULT CALLBACK MarkerBar::subclassProc(HWND hwnd, UINT message, WPARAM wParam,
 			POINT cursor{};
 			::GetCursorPos(&cursor);
 			if (self->barContains(cursor)) {
-				::SetCursor(::LoadCursorW(nullptr, self->occurrenceAt(cursor.y) >= 0 ? IDC_HAND : IDC_ARROW));
+				::SetCursor(::LoadCursorW(nullptr, self->hitAt(cursor).valid() ? IDC_HAND : IDC_ARROW));
 				return TRUE;
 			}
 		}
@@ -291,10 +316,13 @@ LRESULT CALLBACK MarkerBar::subclassProc(HWND hwnd, UINT message, WPARAM wParam,
 }
 
 // ---------------------------------------------------------------------------
-// Selection and search
+// Events
 
 void MarkerBar::onSelectionChanged() {
-	if (!shown() || m_editPending)
+	if (!shown())
+		return;
+	updateCaretLine();
+	if (m_editPending)
 		return;   // a pending edit re-evaluates the selection anyway
 
 	const Sci_Position start = m_editor.call(SCI_GETSELECTIONSTART);
@@ -308,12 +336,32 @@ void MarkerBar::onSelectionChanged() {
 }
 
 void MarkerBar::onTextChanged() {
-	m_textChanged = true;
 	m_plugin->preview().hideFor(hwnd());
+	if (!shown())
+		return;
+	scheduleScan(MarkScan::All, kEditDelay);
 	if (m_search.empty())
 		return;   // nothing marked, the next selection change starts a new search
+	// The occurrence positions are stale until the search runs again
+	m_textChanged = true;
 	m_editPending = true;
 	m_plugin->setTimer(m_index, EvaluateTimer, kEditDelay);
+}
+
+void MarkerBar::onIndicatorsChanged() {
+	const Settings& settings = m_plugin->settings();
+	if (shown() && (settings.findMarks.enabled || settings.styleTokens.enabled || settings.otherIndicators.enabled))
+		scheduleScan(MarkScan::Indicators, kIndicatorDelay);
+}
+
+void MarkerBar::onMarkersChanged() {
+	if (shown() && m_plugin->settings().bookmarks.enabled)
+		scheduleScan(MarkScan::Bookmarks, kMarkerDelay);
+}
+
+void MarkerBar::onSaved() {
+	if (shown() && m_plugin->settings().changeHistory.enabled)
+		scheduleScan(MarkScan::History, kMarkerDelay);
 }
 
 void MarkerBar::onDocumentMaybeSwitched() {
@@ -325,19 +373,35 @@ void MarkerBar::onDocumentMaybeSwitched() {
 	m_document = document;
 	m_textChanged = false;
 	m_editPending = false;
-	m_selectionStart = m_selectionEnd = m_caret = -1;
-	clear();
+	m_selectionStart = m_selectionEnd = m_caret = m_caretDocLine = -1;
+	m_scan.clear();
+	invalidateLines();
+	clearOccurrences();
+	if (!shown())
+		return;
+	m_pendingScan = MarkScan::All;
+	startScan();
+	updateCaretLine();
 	evaluateSelection();
 }
 
 void MarkerBar::onSettingsChanged() {
 	if (!attached())
 		return;
+	stopTimers();
 	refreshFrame();
-	clear();
-	m_selectionStart = m_selectionEnd = m_caret = -1;
-	if (shown())
-		evaluateSelection();
+	m_scan.clear();
+	invalidateLines();
+	clearOccurrences();
+	m_selectionStart = m_selectionEnd = m_caret = m_caretDocLine = -1;
+	if (!shown())
+		return;
+	m_pendingScan = MarkScan::All;
+	startScan();
+	updateCaretLine();
+	evaluateSelection();
+	rebuildRows();
+	paintNow();
 }
 
 void MarkerBar::onAppearanceChanged() {
@@ -357,20 +421,21 @@ void MarkerBar::onTimer(TimerKind kind) {
 		break;
 	case HoverTimer:
 		m_plugin->killTimer(m_index, HoverTimer);
-		if (m_hoverIndex >= 0)
+		if (m_hover.valid())
 			showPreview();
+		break;
+	case ScanDelayTimer:
+		m_plugin->killTimer(m_index, ScanDelayTimer);
+		startScan();
+		break;
+	case ScanTimer:
+		continueScan();
 		break;
 	}
 }
 
-void MarkerBar::stopTimers() {
-	if (!m_plugin)
-		return;
-	m_plugin->killTimer(m_index, EvaluateTimer);
-	m_plugin->killTimer(m_index, SearchTimer);
-	m_plugin->killTimer(m_index, HoverTimer);
-	m_editPending = false;
-}
+// ---------------------------------------------------------------------------
+// Occurrences
 
 void MarkerBar::evaluateSelection() {
 	if (!shown())
@@ -382,8 +447,8 @@ void MarkerBar::evaluateSelection() {
 
 	std::string text;
 	Sci_Position start = 0;
-	if (!active() || !readSearchText(text, start)) {
-		clear();
+	if (!occurrencesActive() || !readSearchText(text, start)) {
+		clearOccurrences();
 		m_textChanged = false;
 		return;
 	}
@@ -441,22 +506,22 @@ void MarkerBar::beginSearch(std::string text, int flags, Sci_Position currentSta
 	m_lastDocLine = -1;
 	m_current = -1;
 	m_currentStart = currentStart;
-	m_hoverIndex = -1;
+	m_hover = Hit();
 	continueSearch();
 }
 
 void MarkerBar::continueSearch() {
-	const bool finished = m_search.resume(m_editor, kSearchBudget);
+	const bool finished = m_search.resume(m_editor, kSliceBudget);
 	updateCurrentIndex();
 	rebuildRows();
 	paintNow();
 	if (finished)
 		m_plugin->killTimer(m_index, SearchTimer);
 	else
-		m_plugin->setTimer(m_index, SearchTimer, kSearchInterval);
+		m_plugin->setTimer(m_index, SearchTimer, kSliceInterval);
 }
 
-void MarkerBar::clear() {
+void MarkerBar::clearOccurrences() {
 	m_plugin->killTimer(m_index, SearchTimer);
 	m_plugin->killTimer(m_index, HoverTimer);
 	m_plugin->preview().hideFor(hwnd());
@@ -466,7 +531,7 @@ void MarkerBar::clear() {
 	m_lastDocLine = -1;
 	m_current = -1;
 	m_currentStart = -1;
-	m_hoverIndex = -1;
+	m_hover = Hit();
 	if (hadMarkers) {
 		rebuildRows();
 		paintNow();
@@ -490,6 +555,58 @@ void MarkerBar::updateCurrentIndex() {
 	m_current = (it != occurrences.end() && it->start == m_currentStart) ? static_cast<long long>(it - occurrences.begin()) : -1;
 }
 
+void MarkerBar::updateCaretLine() {
+	if (!m_plugin->settings().caretLine.enabled)
+		return;
+	const Sci_Position line = m_editor.lineFromPosition(m_editor.call(SCI_GETCURRENTPOS));
+	if (line == m_caretDocLine)
+		return;
+	m_caretDocLine = line;
+	if (!m_layoutValid)
+		return;   // the next paint builds every row
+	rebuildCaretRow();
+	paintNow();
+}
+
+// ---------------------------------------------------------------------------
+// Other marks
+
+void MarkerBar::scheduleScan(unsigned sources, UINT delay) {
+	m_pendingScan |= sources;
+	m_plugin->setTimer(m_index, ScanDelayTimer, delay);
+}
+
+void MarkerBar::startScan() {
+	if (!shown() || !m_pendingScan)
+		return;
+	const Settings& settings = m_plugin->settings();
+	MarkScan::Request request;
+	request.history = settings.changeHistory.enabled;
+	request.bookmarks = settings.bookmarks.enabled;
+	request.bookmarkMarker = m_plugin->bookmarkMarker();
+	request.findMarks = settings.findMarks.enabled;
+	request.styleTokens = settings.styleTokens.enabled;
+	if (settings.otherIndicators.enabled)
+		request.otherIndicators = settings.otherIndicatorNumbers();
+	m_otherIndicators = request.otherIndicators;
+
+	m_scan.begin(m_pendingScan, request, m_editor);
+	m_pendingScan = 0;
+	continueScan();
+}
+
+void MarkerBar::continueScan() {
+	if (m_scan.resume(m_editor, kSliceBudget)) {
+		m_plugin->killTimer(m_index, ScanTimer);
+		for (bool& valid : m_markLinesValid)
+			valid = false;
+		rebuildRows();
+		paintNow();
+	} else {
+		m_plugin->setTimer(m_index, ScanTimer, kSliceInterval);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Drawing
 
@@ -506,15 +623,20 @@ void MarkerBar::onPainted() {
 	const bool linesMoved = !m_layoutValid || layout.rangeMin != m_layout.rangeMin || layout.rangeMax != m_layout.rangeMax;
 	m_layout = layout;
 	m_layoutValid = true;
-	if (linesMoved) {
-		m_lines.clear();
-		m_lastDocLine = -1;
-	}
+	if (linesMoved)
+		invalidateLines();
 	rebuildRows();
 	paintNow();
 }
 
-void MarkerBar::updateLines() {
+void MarkerBar::invalidateLines() {
+	m_lines.clear();
+	m_lastDocLine = -1;
+	for (bool& valid : m_markLinesValid)
+		valid = false;
+}
+
+void MarkerBar::updateOccurrenceLines() {
 	const auto& occurrences = m_search.occurrences();
 	if (m_lines.size() > occurrences.size()) {
 		m_lines.clear();
@@ -531,141 +653,233 @@ void MarkerBar::updateLines() {
 	}
 }
 
+void MarkerBar::updateMarkLines(Layer layer) {
+	const std::vector<Mark>& marks = m_scan.marks(layer);
+	std::vector<Sci_Position>& lines = m_markLines[layer];
+	if (m_markLinesValid[layer] && lines.size() == marks.size())
+		return;
+	lines.clear();
+	lines.reserve(marks.size());
+	Sci_Position lastLine = -1;
+	Sci_Position lastDisplay = 0;
+	for (const Mark& mark : marks) {
+		if (mark.line != lastLine) {
+			lastLine = mark.line;
+			lastDisplay = m_editor.displayLineFromDocLine(mark.line);
+		}
+		lines.push_back(lastDisplay);
+	}
+	m_markLinesValid[layer] = true;
+}
+
+void MarkerBar::fillRows(Layer layer, Sci_Position displayLine, int height, unsigned char value) {
+	std::vector<unsigned char>& rows = m_rows[static_cast<size_t>(layer)];
+	const int length = static_cast<int>(rows.size());
+	// Rounded like Windows rounds the thumb position
+	const int top = static_cast<int>(std::lround(static_cast<double>(displayLine) * m_scale));
+	const int bottom = std::min(length, top + height);
+	for (int y = std::max(0, top); y < bottom; ++y) {
+		unsigned char& row = rows[static_cast<size_t>(y)];
+		if (row == 0)
+			row = value;
+	}
+}
+
 void MarkerBar::rebuildRows() {
 	if (!m_layoutValid) {
 		m_layout = computeLayout();
 		m_layoutValid = true;
 	}
 	m_scale = pixelsPerLine();
-	m_rows.assign(static_cast<size_t>(m_layout.trackLength), RowEmpty);
-	if (m_search.occurrences().empty() || m_rows.empty() || m_scale <= 0)
+	const size_t length = static_cast<size_t>(m_layout.trackLength);
+	for (auto& rows : m_rows)
+		rows.assign(length, 0);
+	if (length == 0 || m_scale <= 0)
 		return;
 
-	updateLines();
 	const int height = markerHeight();
-	const int length = static_cast<int>(m_rows.size());
-	auto mark = [&](size_t index, Row kind) {
-		// Rounded like Windows rounds the thumb position
-		const int top = static_cast<int>(std::lround(static_cast<double>(m_lines[index]) * m_scale));
-		const int bottom = std::min(length, top + height);
-		for (int y = std::max(0, top); y < bottom; ++y) {
-			if (m_rows[static_cast<size_t>(y)] < kind)
-				m_rows[static_cast<size_t>(y)] = kind;
-		}
-	};
-	for (size_t i = 0; i < m_lines.size(); ++i)
-		mark(i, RowOccurrence);
-	if (m_current >= 0 && static_cast<size_t>(m_current) < m_lines.size())
-		mark(static_cast<size_t>(m_current), RowCurrent);
+
+	if (!m_search.occurrences().empty()) {
+		updateOccurrenceLines();
+		for (Sci_Position line : m_lines)
+			fillRows(LayerOccurrences, line, height, 1);
+		if (m_current >= 0 && static_cast<size_t>(m_current) < m_lines.size())
+			fillRows(LayerCurrent, m_lines[static_cast<size_t>(m_current)], height, 1);
+	}
+
+	for (Layer layer : { LayerChangeHistory, LayerBookmarks, LayerOtherIndicators, LayerStyleTokens, LayerFindMarks }) {
+		const std::vector<Mark>& marks = m_scan.marks(layer);
+		if (marks.empty())
+			continue;
+		updateMarkLines(layer);
+		const std::vector<Sci_Position>& lines = m_markLines[layer];
+		for (size_t i = 0; i < marks.size(); ++i)
+			fillRows(layer, lines[i], height, marks[i].value);
+	}
+
+	rebuildCaretRow();
+}
+
+void MarkerBar::rebuildCaretRow() {
+	std::vector<unsigned char>& rows = m_rows[LayerCaretLine];
+	std::fill(rows.begin(), rows.end(), static_cast<unsigned char>(0));
+	if (!m_plugin->settings().caretLine.enabled || rows.empty() || m_scale <= 0)
+		return;
+	if (m_caretDocLine < 0)
+		m_caretDocLine = m_editor.lineFromPosition(m_editor.call(SCI_GETCURRENTPOS));
+
+	// The selected occurrence already shows where the caret is
+	const auto& occurrences = m_search.occurrences();
+	if (m_current >= 0 && static_cast<size_t>(m_current) < occurrences.size() &&
+		m_editor.lineFromPosition(occurrences[static_cast<size_t>(m_current)].start) == m_caretDocLine)
+		return;
+
+	// Centered on the row a marker of that line would use
+	const int thickness = Dpi::scale(m_plugin->settings().caretLineThickness, dpi());
+	const Sci_Position display = m_editor.displayLineFromDocLine(m_caretDocLine);
+	const int top = static_cast<int>(std::lround(static_cast<double>(display) * m_scale)) + (markerHeight() - thickness) / 2;
+	const int length = static_cast<int>(rows.size());
+	for (int y = std::max(0, top); y < std::min(length, top + thickness); ++y)
+		rows[static_cast<size_t>(y)] = 1;
 }
 
 void MarkerBar::paintNow() {
 	if (!shown())
 		return;
+	if (!m_layoutValid)
+		rebuildRows();
 	HDC dc = ::GetWindowDC(hwnd());
 	if (!dc)
 		return;
-	paint(dc);
-	::ReleaseDC(hwnd(), dc);
-}
-
-void MarkerBar::paint(HDC dc) {
-	if (!m_layoutValid)
-		rebuildRows();
-
 	const RECT& bar = m_layout.bar;
-	const int width = bar.right - bar.left;
-	const int height = bar.bottom - bar.top;
-	if (width <= 0 || height <= 0)
-		return;
-
-	const BarColors colors = m_plugin->barColors(m_editor);
-
-	// Draw off screen and copy in one go to avoid flicker
-	HDC memory = ::CreateCompatibleDC(dc);
-	HBITMAP bitmap = ::CreateCompatibleBitmap(dc, width, height);
-	if (!memory || !bitmap) {
-		if (bitmap)
-			::DeleteObject(bitmap);
-		if (memory)
-			::DeleteDC(memory);
-		return;
-	}
-	HGDIOBJ oldBitmap = ::SelectObject(memory, bitmap);
-
-	HBRUSH background = ::CreateSolidBrush(colors.background);
-	HBRUSH occurrence = ::CreateSolidBrush(colors.occurrence);
-	HBRUSH current = ::CreateSolidBrush(colors.current);
-
-	const RECT all{ 0, 0, width, height };
-	::FillRect(memory, &all, background);
-
-	// Other occurrences are a bit narrower than the current one, so the two
-	// differ in shape as well as in color.
-	const int inset = width >= 6 ? width / 5 : 0;
-	const int offset = m_layout.trackTop - bar.top;
-	const size_t rows = m_rows.size();
-	for (size_t y = 0; y < rows;) {
-		const unsigned char kind = m_rows[y];
-		if (kind == RowEmpty) {
-			++y;
-			continue;
-		}
-		const size_t first = y;
-		while (y < rows && m_rows[y] == kind)
-			++y;
-		RECT marker = kind == RowCurrent
-			? RECT{ 0, offset + static_cast<int>(first), width, offset + static_cast<int>(y) }
-			: RECT{ inset, offset + static_cast<int>(first), width - inset, offset + static_cast<int>(y) };
-		::FillRect(memory, &marker, kind == RowCurrent ? current : occurrence);
-	}
-
-	::BitBlt(dc, bar.left, bar.top, width, height, memory, 0, 0, SRCCOPY);
-
-	::DeleteObject(background);
-	::DeleteObject(occurrence);
-	::DeleteObject(current);
-	::SelectObject(memory, oldBitmap);
-	::DeleteObject(bitmap);
-	::DeleteDC(memory);
+	const BarStyle style = m_plugin->barStyle(m_editor);
+	paintBar(dc, bar.left, bar.top, bar.right - bar.left, bar.bottom - bar.top, style, m_rows, m_layout.trackTop - bar.top);
+	::ReleaseDC(hwnd(), dc);
 }
 
 // ---------------------------------------------------------------------------
 // Mouse
 
-int MarkerBar::occurrenceAt(int screenY) const {
-	if (m_lines.empty() || m_scale <= 0 || !m_layoutValid)
+long long MarkerBar::nearest(const std::vector<Sci_Position>& lines, double y, double tolerance) const {
+	if (lines.empty())
 		return -1;
-
-	RECT window{};
-	::GetWindowRect(hwnd(), &window);
-	const double y = static_cast<double>(screenY - window.top - m_layout.trackTop);
 	const double height = markerHeight();
-	const double tolerance = height / 2 + Dpi::scale(3, dpi());
-
-	// Display line whose marker is centered at y
 	const double line = (y - height / 2) / m_scale;
 	const auto target = static_cast<Sci_Position>(std::ceil(line));
-	const auto after = std::lower_bound(m_lines.begin(), m_lines.end(), target);
+	const auto after = std::lower_bound(lines.begin(), lines.end(), target);
 
 	long long best = -1;
 	double bestDistance = tolerance;
 	auto consider = [&](std::vector<Sci_Position>::const_iterator candidate) {
-		// Use the first occurrence on that display line
-		const auto first = std::lower_bound(m_lines.begin(), candidate + 1, *candidate);
-		const double center = static_cast<double>(*first) * m_scale + height / 2;
+		// The first mark on that display line
+		const auto first = std::lower_bound(lines.begin(), candidate + 1, *candidate);
+		const double center = std::lround(static_cast<double>(*first) * m_scale) + height / 2;
 		const double distance = std::fabs(center - y);
-		const long long index = first - m_lines.begin();
-		if (distance < bestDistance || (distance == bestDistance && index == m_current)) {
+		if (distance <= bestDistance) {
 			bestDistance = distance;
-			best = index;
+			best = first - lines.begin();
 		}
 	};
-	if (after != m_lines.end())
+	if (after != lines.end())
 		consider(after);
-	if (after != m_lines.begin())
+	if (after != lines.begin())
 		consider(after - 1);
-	return static_cast<int>(best);
+	return best;
+}
+
+MarkerBar::Hit MarkerBar::hitAt(POINT screen) const {
+	if (!m_layoutValid || m_scale <= 0)
+		return Hit();
+
+	RECT window{};
+	::GetWindowRect(hwnd(), &window);
+	const double y = static_cast<double>(screen.y - window.top - m_layout.trackTop);
+	const int x = screen.x - window.left - m_layout.bar.left;
+	const int width = m_layout.bar.right - m_layout.bar.left;
+	const double tolerance = markerHeight() / 2.0 + Dpi::scale(3, dpi());
+	const BarStyle style = m_plugin->barStyle(m_editor);
+
+	// First the layers under the mouse horizontally, then any layer
+	for (int pass = 0; pass < 2; ++pass) {
+		for (Layer layer : kHitOrder) {
+			const LayerStyle& layerStyle = style.layers[layer];
+			if (!layerStyle.enabled)
+				continue;
+			if (pass == 0) {
+				int left = 0;
+				int right = 0;
+				layerSpan(layerStyle, width, left, right);
+				if (x < left - 1 || x > right)
+					continue;
+			}
+
+			if (layer == LayerCurrent) {
+				if (m_current < 0 || static_cast<size_t>(m_current) >= m_lines.size())
+					continue;
+				const std::vector<Sci_Position> single{ m_lines[static_cast<size_t>(m_current)] };
+				if (nearest(single, y, tolerance) >= 0)
+					return Hit{ LayerCurrent, static_cast<size_t>(m_current) };
+				continue;
+			}
+
+			const std::vector<Sci_Position>& lines = layer == LayerOccurrences ? m_lines : m_markLines[layer];
+			const long long index = nearest(lines, y, tolerance);
+			if (index >= 0)
+				return Hit{ layer, static_cast<size_t>(index) };
+		}
+	}
+	return Hit();
+}
+
+Mark MarkerBar::markOf(const Hit& hit) const {
+	if (hit.layer == LayerOccurrences || hit.layer == LayerCurrent) {
+		const Occurrence& occurrence = m_search.occurrences()[hit.index];
+		return Mark{ occurrence.start, occurrence.end, m_editor.lineFromPosition(occurrence.start), 1 };
+	}
+	return m_scan.marks(hit.layer)[hit.index];
+}
+
+std::wstring MarkerBar::captionOf(const Hit& hit, Sci_Position line) const {
+	std::wstring kind;
+	size_t total = 0;
+	bool limited = false;
+	switch (hit.layer) {
+	case LayerOccurrences:
+	case LayerCurrent:
+		kind = tr(Text::KindOccurrence);
+		total = m_search.occurrences().size();
+		limited = m_search.truncated();
+		break;
+	case LayerBookmarks:
+		kind = tr(Text::KindBookmark);
+		break;
+	case LayerFindMarks:
+		kind = tr(Text::KindFindMark);
+		break;
+	case LayerChangeHistory: {
+		static const Text states[kHistoryStates] = { Text::HistoryModified, Text::HistorySaved, Text::HistoryReverted, Text::HistoryRevertedModified };
+		const int value = std::clamp<int>(m_scan.marks(hit.layer)[hit.index].value, 1, kHistoryStates);
+		kind = tr(states[value - 1]);
+		break;
+	}
+	case LayerStyleTokens:
+		kind = std::wstring(tr(Text::KindStyleToken)) + L" " + std::to_wstring(m_scan.marks(hit.layer)[hit.index].value);
+		break;
+	case LayerOtherIndicators: {
+		const size_t value = m_scan.marks(hit.layer)[hit.index].value;
+		kind = tr(Text::KindIndicator);
+		if (value >= 1 && value <= m_otherIndicators.size())
+			kind += L" " + std::to_wstring(m_otherIndicators[value - 1]);
+		break;
+	}
+	default:
+		break;
+	}
+	if (total == 0)
+		total = m_scan.marks(hit.layer).size();
+
+	return std::wstring(tr(Text::CaptionLine)) + L" " + withSeparators(static_cast<size_t>(line) + 1) + L"    " + kind + L"  " +
+		withSeparators(hit.index + 1) + L" / " + withSeparators(total) + (limited ? L"+" : L"");
 }
 
 void MarkerBar::onMouseMove(POINT screen) {
@@ -675,16 +889,16 @@ void MarkerBar::onMouseMove(POINT screen) {
 	}
 
 	m_hoverPoint = screen;
-	const long long index = occurrenceAt(screen.y);
+	const Hit hit = hitAt(screen);
 	PreviewWindow& preview = m_plugin->preview();
-	if (index == m_hoverIndex) {
-		if (index >= 0 && preview.visibleFor(hwnd()))
+	if (hit == m_hover) {
+		if (hit.valid() && preview.visibleFor(hwnd()))
 			showPreview();   // follow the mouse vertically
 		return;
 	}
 
-	m_hoverIndex = index;
-	if (index < 0 || !m_plugin->settings().previewEnabled) {
+	m_hover = hit;
+	if (!hit.valid() || !m_plugin->settings().previewEnabled) {
 		m_plugin->killTimer(m_index, HoverTimer);
 		preview.hideFor(hwnd());
 	} else if (preview.visibleFor(hwnd())) {
@@ -695,9 +909,9 @@ void MarkerBar::onMouseMove(POINT screen) {
 }
 
 void MarkerBar::onMouseLeave() {
-	if (m_hoverIndex < 0 && !m_plugin->preview().visibleFor(hwnd()))
+	if (!m_hover.valid() && !m_plugin->preview().visibleFor(hwnd()))
 		return;
-	m_hoverIndex = -1;
+	m_hover = Hit();
 	m_plugin->killTimer(m_index, HoverTimer);
 	m_plugin->preview().hideFor(hwnd());
 }
@@ -705,43 +919,50 @@ void MarkerBar::onMouseLeave() {
 void MarkerBar::onClick(POINT screen) {
 	m_plugin->killTimer(m_index, HoverTimer);
 	m_plugin->preview().hideFor(hwnd());
-	m_hoverIndex = -1;
+	m_hover = Hit();
 
-	const int index = occurrenceAt(screen.y);
-	if (index >= 0)
-		goTo(static_cast<size_t>(index));
+	const Hit hit = hitAt(screen);
+	if (hit.valid())
+		goTo(hit);
 	else if (m_plugin->settings().scrollOnEmptyClick)
 		scrollTo(screen.y);
 	::SetFocus(hwnd());
 }
 
-void MarkerBar::goTo(size_t index) {
-	const auto& occurrences = m_search.occurrences();
-	if (index >= occurrences.size())
-		return;
-	const Occurrence occurrence = occurrences[index];
-	if (m_textChanged || occurrence.end > m_editor.length())
+void MarkerBar::scrollToLine(Sci_Position docLine, bool center) {
+	const Sci_Position display = m_editor.displayLineFromDocLine(docLine);
+	const Sci_Position onScreen = m_editor.call(SCI_LINESONSCREEN);
+	const Sci_Position first = m_editor.call(SCI_GETFIRSTVISIBLELINE);
+	Sci_Position target = first;
+	if (center)
+		target = display - onScreen / 2;
+	else if (display < first)
+		target = display;
+	else if (display >= first + onScreen)
+		target = display - onScreen + 1;
+	m_editor.call(SCI_SETFIRSTVISIBLELINE, static_cast<uptr_t>(std::max<Sci_Position>(0, target)));
+}
+
+void MarkerBar::goTo(const Hit& hit) {
+	const bool occurrence = hit.layer == LayerOccurrences || hit.layer == LayerCurrent;
+	if (occurrence && m_textChanged)
 		return;   // positions are being refreshed after an edit
+	const Mark mark = markOf(hit);
+	if (mark.end > m_editor.length() || mark.line >= m_editor.lineCount())
+		return;
 
 	const Settings& settings = m_plugin->settings();
-	const Sci_Position line = m_editor.lineFromPosition(occurrence.start);
-	m_editor.call(SCI_ENSUREVISIBLE, static_cast<uptr_t>(line));   // unfold
+	m_editor.call(SCI_ENSUREVISIBLE, static_cast<uptr_t>(mark.line));   // unfold
 
-	if (settings.selectOnClick) {
-		m_editor.call(SCI_SETSEL, static_cast<uptr_t>(occurrence.start), occurrence.end);
-		m_selectionStart = occurrence.start;
-		m_selectionEnd = occurrence.end;
-		m_caret = occurrence.end;
-		setCurrent(occurrence.start);
+	if (settings.moveCaretOnClick) {
+		if (mark.end > mark.start)
+			m_editor.call(SCI_SETSEL, static_cast<uptr_t>(mark.start), mark.end);
+		else
+			m_editor.call(SCI_SETEMPTYSELECTION, static_cast<uptr_t>(mark.start));
 	}
-
-	if (settings.centerOnClick) {
-		const Sci_Position displayLine = m_editor.displayLineFromDocLine(line);
-		const Sci_Position onScreen = m_editor.call(SCI_LINESONSCREEN);
-		m_editor.call(SCI_SETFIRSTVISIBLELINE, static_cast<uptr_t>(std::max<Sci_Position>(0, displayLine - onScreen / 2)));
-	} else {
-		m_editor.call(SCI_SCROLLRANGE, static_cast<uptr_t>(occurrence.end), occurrence.start);
-	}
+	scrollToLine(mark.line, settings.centerOnClick);
+	if (settings.flashLine)
+		m_plugin->flashLine(m_editor, mark.line);
 }
 
 void MarkerBar::scrollTo(int screenY) {
@@ -756,21 +977,98 @@ void MarkerBar::scrollTo(int screenY) {
 }
 
 void MarkerBar::showPreview() {
-	const auto& occurrences = m_search.occurrences();
-	if (m_hoverIndex < 0 || static_cast<size_t>(m_hoverIndex) >= occurrences.size() || m_textChanged)
+	if (!m_hover.valid())
+		return;
+	const bool occurrence = m_hover.layer == LayerOccurrences || m_hover.layer == LayerCurrent;
+	if (occurrence && m_textChanged)
+		return;   // positions are being refreshed after an edit
+	const size_t count = occurrence ? m_search.occurrences().size() : m_scan.marks(m_hover.layer).size();
+	if (m_hover.index >= count)
 		return;
 
 	const Settings& settings = m_plugin->settings();
 	RECT window{};
 	::GetWindowRect(hwnd(), &window);
 
+	const Mark mark = markOf(m_hover);
 	PreviewWindow::Request request;
-	request.occurrence = occurrences[static_cast<size_t>(m_hoverIndex)];
-	request.number = static_cast<size_t>(m_hoverIndex) + 1;
-	request.total = occurrences.size();
-	request.totalIsLimited = m_search.truncated();
+	request.occurrence = Occurrence{ mark.start, mark.end };
+	request.caption = captionOf(m_hover, mark.line);
+
+	// Occurrences of the searched text in the lines the preview shows: Notepad++
+	// only highlights the lines on screen, so the preview highlights them itself
+	const auto& occurrences = m_search.occurrences();
+	if (!occurrences.empty() && !m_textChanged) {
+		const Sci_Position lines = m_editor.lineCount();
+		const Sci_Position firstLine = std::max<Sci_Position>(0, mark.line - settings.previewContextLines);
+		const Sci_Position lastLine = std::min<Sci_Position>(lines - 1, mark.line + settings.previewContextLines);
+		const Sci_Position from = m_editor.call(SCI_POSITIONFROMLINE, static_cast<uptr_t>(firstLine));
+		const Sci_Position to = m_editor.call(SCI_GETLINEENDPOSITION, static_cast<uptr_t>(lastLine));
+		auto it = std::lower_bound(occurrences.begin(), occurrences.end(), from,
+			[](const Occurrence& occurrence, Sci_Position position) { return occurrence.start < position; });
+		for (; it != occurrences.end() && it->start < to && request.highlights.size() < 1000; ++it)
+			request.highlights.push_back(*it);
+	}
 	request.contextLines = settings.previewContextLines;
 	request.widthPercent = settings.previewWidthPercent;
 	request.anchor = POINT{ window.left + m_layout.bar.left, m_hoverPoint.y };
 	m_plugin->preview().show(m_editor, request);
+}
+
+// ---------------------------------------------------------------------------
+// Previous / next occurrence
+
+bool MarkerBar::jump(bool forward) {
+	if (!attached())
+		return false;
+
+	Sci_Position from = m_editor.call(SCI_GETSELECTIONSTART);
+	Sci_Position to = m_editor.call(SCI_GETSELECTIONEND);
+	if (m_editor.call(SCI_GETSELECTIONS) > 1)
+		return false;
+	if (from == to) {
+		const Sci_Position caret = m_editor.call(SCI_GETCURRENTPOS);
+		from = m_editor.call(SCI_WORDSTARTPOSITION, static_cast<uptr_t>(caret), 1);
+		to = m_editor.call(SCI_WORDENDPOSITION, static_cast<uptr_t>(caret), 1);
+	}
+	if (from == to || to - from > kMaximumTextBytes || m_editor.lineFromPosition(from) != m_editor.lineFromPosition(to))
+		return false;
+
+	const std::string text = m_editor.text(from, to);
+	int flags = m_plugin->searchFlags();
+	const bool oneWord = m_editor.call(SCI_ISRANGEWORD, static_cast<uptr_t>(from), to) &&
+		m_editor.call(SCI_WORDENDPOSITION, static_cast<uptr_t>(from), 1) == to;
+	if (!oneWord)
+		flags &= ~SCFIND_WHOLEWORD;
+
+	// The target and the search flags are shared with Notepad++: restore them
+	const sptr_t savedStart = m_editor.call(SCI_GETTARGETSTART);
+	const sptr_t savedEnd = m_editor.call(SCI_GETTARGETEND);
+	const sptr_t savedFlags = m_editor.call(SCI_GETSEARCHFLAGS);
+	m_editor.call(SCI_SETSEARCHFLAGS, static_cast<uptr_t>(flags));
+
+	const Sci_Position length = m_editor.length();
+	auto search = [&](Sci_Position start, Sci_Position end) {
+		// A target that ends before it starts is searched backwards
+		m_editor.call(SCI_SETTARGETRANGE, static_cast<uptr_t>(start), end);
+		return m_editor.call(SCI_SEARCHINTARGET, text.size(), text.c_str());
+	};
+	Sci_Position found = forward ? search(to, length) : search(from, 0);
+	if (found < 0 && m_plugin->settings().wrapAround)
+		found = forward ? search(0, from) : search(length, to);
+	const Sci_Position foundEnd = found >= 0 ? m_editor.call(SCI_GETTARGETEND) : -1;
+
+	m_editor.call(SCI_SETSEARCHFLAGS, static_cast<uptr_t>(savedFlags));
+	m_editor.call(SCI_SETTARGETRANGE, static_cast<uptr_t>(savedStart), savedEnd);
+	if (found < 0)
+		return false;
+
+	const Sci_Position line = m_editor.lineFromPosition(found);
+	m_editor.call(SCI_ENSUREVISIBLE, static_cast<uptr_t>(line));
+	m_editor.call(SCI_SETSEL, static_cast<uptr_t>(found), foundEnd);
+	if (m_plugin->settings().centerOnJump)
+		scrollToLine(line, true);
+	else
+		m_editor.call(SCI_SCROLLRANGE, static_cast<uptr_t>(foundEnd), found);
+	return true;
 }

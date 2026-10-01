@@ -20,21 +20,28 @@ public:
 	explicit IniFile(const std::wstring& path) : m_path(path) {}
 
 	std::wstring read(const wchar_t* section, const wchar_t* key) const {
-		wchar_t buffer[128] = {};
+		wchar_t buffer[256] = {};
 		::GetPrivateProfileStringW(section, key, L"", buffer, static_cast<DWORD>(std::size(buffer)), m_path.c_str());
 		std::wstring value(buffer);
 		value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](wchar_t c) { return !std::iswspace(c); }));
 		value.erase(std::find_if(value.rbegin(), value.rend(), [](wchar_t c) { return !std::iswspace(c); }).base(), value.end());
+		return value;
+	}
+
+	std::wstring readLower(const wchar_t* section, const wchar_t* key) const {
+		std::wstring value = read(section, key);
 		std::transform(value.begin(), value.end(), value.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
 		return value;
 	}
+
+	bool has(const wchar_t* section, const wchar_t* key) const { return !read(section, key).empty(); }
 
 	void write(const wchar_t* section, const wchar_t* key, const std::wstring& value) const {
 		::WritePrivateProfileStringW(section, key, value.c_str(), m_path.c_str());
 	}
 
 	bool readBool(const wchar_t* section, const wchar_t* key, bool fallback) const {
-		const std::wstring value = read(section, key);
+		const std::wstring value = readLower(section, key);
 		if (value == L"1" || value == L"yes" || value == L"true" || value == L"on")
 			return true;
 		if (value == L"0" || value == L"no" || value == L"false" || value == L"off")
@@ -43,7 +50,7 @@ public:
 	}
 
 	int readInt(const wchar_t* section, const wchar_t* key, int fallback) const {
-		const std::wstring value = read(section, key);
+		const std::wstring value = readLower(section, key);
 		if (value.empty())
 			return fallback;
 		wchar_t* end = nullptr;
@@ -52,7 +59,7 @@ public:
 	}
 
 	Choice readChoice(const wchar_t* section, const wchar_t* key, Choice fallback) const {
-		const std::wstring value = read(section, key);
+		const std::wstring value = readLower(section, key);
 		if (value == L"auto" || value == L"notepad++")
 			return Choice::FollowNotepad;
 		if (value == L"1" || value == L"on" || value == L"yes")
@@ -62,8 +69,19 @@ public:
 		return fallback;
 	}
 
+	Position readPosition(const wchar_t* section, const wchar_t* key, Position fallback) const {
+		const std::wstring value = readLower(section, key);
+		if (value == L"left")
+			return Position::Left;
+		if (value == L"center" || value == L"centre")
+			return Position::Center;
+		if (value == L"right")
+			return Position::Right;
+		return fallback;
+	}
+
 	NumberChoice readNumber(const wchar_t* section, const wchar_t* key, NumberChoice fallback) const {
-		const std::wstring value = read(section, key);
+		const std::wstring value = readLower(section, key);
 		if (value == L"auto")
 			return NumberChoice{ true, fallback.value };
 		wchar_t* end = nullptr;
@@ -74,7 +92,7 @@ public:
 	}
 
 	ColorChoice readColor(const wchar_t* section, const wchar_t* key, ColorChoice fallback) const {
-		const std::wstring value = read(section, key);
+		const std::wstring value = readLower(section, key);
 		if (value == L"auto")
 			return ColorChoice{ true, fallback.color };
 		if (value.size() == 7 && value[0] == L'#') {
@@ -86,11 +104,22 @@ public:
 		return fallback;
 	}
 
+	void readLayer(const wchar_t* section, LayerSettings& layer) const {
+		layer.enabled = readBool(section, L"Enabled", layer.enabled);
+		layer.position = readPosition(section, L"Position", layer.position);
+		layer.widthPercent = readInt(section, L"Width", layer.widthPercent);
+		layer.color = readColor(section, L"Color", layer.color);
+	}
+
 	void writeBool(const wchar_t* section, const wchar_t* key, bool value) const { write(section, key, value ? L"1" : L"0"); }
 	void writeInt(const wchar_t* section, const wchar_t* key, int value) const { write(section, key, std::to_wstring(value)); }
 
 	void writeChoice(const wchar_t* section, const wchar_t* key, Choice value) const {
 		write(section, key, value == Choice::FollowNotepad ? L"auto" : value == Choice::On ? L"on" : L"off");
+	}
+
+	void writePosition(const wchar_t* section, const wchar_t* key, Position value) const {
+		write(section, key, value == Position::Left ? L"left" : value == Position::Right ? L"right" : L"center");
 	}
 
 	void writeNumber(const wchar_t* section, const wchar_t* key, const NumberChoice& value) const {
@@ -107,40 +136,80 @@ public:
 		write(section, key, buffer);
 	}
 
+	void writeLayer(const wchar_t* section, const LayerSettings& layer, bool withColor = true) const {
+		writeBool(section, L"Enabled", layer.enabled);
+		writePosition(section, L"Position", layer.position);
+		writeInt(section, L"Width", layer.widthPercent);
+		if (withColor)
+			writeColor(section, L"Color", layer.color);
+	}
+
 private:
 	std::wstring m_path;
 };
+
+const wchar_t* kHistoryKeys[kHistoryStates] = { L"ModifiedColor", L"SavedColor", L"RevertedColor", L"RevertedToModifiedColor" };
 
 } // namespace
 
 void Settings::load(const std::wstring& file) {
 	const IniFile ini(file);
-	const Settings defaults;
 
-	enabled = ini.readBool(L"General", L"Enabled", defaults.enabled);
+	enabled = ini.readBool(L"General", L"Enabled", enabled);
+	const std::wstring languageName = ini.readLower(L"General", L"Language");
+	if (languageName == L"en" || languageName == L"english")
+		language = Language::English;
+	else if (languageName == L"ko" || languageName == L"korean")
+		language = Language::Korean;
+	else
+		language = Language::FollowNotepad;
 
-	followSmartHighlighting = ini.readBool(L"Matching", L"FollowSmartHighlighting", defaults.followSmartHighlighting);
-	matchCase = ini.readChoice(L"Matching", L"MatchCase", defaults.matchCase);
-	wholeWord = ini.readChoice(L"Matching", L"WholeWord", defaults.wholeWord);
-	useWordAtCaret = ini.readBool(L"Matching", L"UseWordAtCaret", defaults.useWordAtCaret);
-	markLargeFiles = ini.readBool(L"Matching", L"MarkLargeFiles", defaults.markLargeFiles);
-	minimumLength = ini.readInt(L"Matching", L"MinimumLength", defaults.minimumLength);
-	maximumMarkers = ini.readInt(L"Matching", L"MaximumMarkers", defaults.maximumMarkers);
+	barWidth = ini.readNumber(L"Markers", L"BarWidth", barWidth);
+	minimumMarkerHeight = ini.readInt(L"Markers", L"MinimumMarkerHeight", minimumMarkerHeight);
+	backgroundColor = ini.readColor(L"Markers", L"BackgroundColor", backgroundColor);
 
-	barWidth = ini.readNumber(L"Markers", L"BarWidth", defaults.barWidth);
-	minimumMarkerHeight = ini.readInt(L"Markers", L"MinimumMarkerHeight", defaults.minimumMarkerHeight);
-	occurrenceColor = ini.readColor(L"Markers", L"OccurrenceColor", defaults.occurrenceColor);
-	currentColor = ini.readColor(L"Markers", L"CurrentColor", defaults.currentColor);
-	backgroundColor = ini.readColor(L"Markers", L"BackgroundColor", defaults.backgroundColor);
+	// 1.0 kept the occurrence colors in [Markers]
+	occurrences.color = ini.readColor(L"Markers", L"OccurrenceColor", occurrences.color);
+	current.color = ini.readColor(L"Markers", L"CurrentColor", current.color);
+	ini.readLayer(L"Occurrences", occurrences);
+	ini.readLayer(L"CurrentOccurrence", current);
 
-	selectOnClick = ini.readBool(L"Navigation", L"SelectOnClick", defaults.selectOnClick);
-	centerOnClick = ini.readBool(L"Navigation", L"CenterOnClick", defaults.centerOnClick);
-	scrollOnEmptyClick = ini.readBool(L"Navigation", L"ScrollOnEmptyClick", defaults.scrollOnEmptyClick);
+	followSmartHighlighting = ini.readBool(L"Matching", L"FollowSmartHighlighting", followSmartHighlighting);
+	matchCase = ini.readChoice(L"Matching", L"MatchCase", matchCase);
+	wholeWord = ini.readChoice(L"Matching", L"WholeWord", wholeWord);
+	useWordAtCaret = ini.readBool(L"Matching", L"UseWordAtCaret", useWordAtCaret);
+	markLargeFiles = ini.readBool(L"Matching", L"MarkLargeFiles", markLargeFiles);
+	minimumLength = ini.readInt(L"Matching", L"MinimumLength", minimumLength);
+	maximumMarkers = ini.readInt(L"Matching", L"MaximumMarkers", maximumMarkers);
 
-	previewEnabled = ini.readBool(L"Preview", L"Enabled", defaults.previewEnabled);
-	previewContextLines = ini.readInt(L"Preview", L"ContextLines", defaults.previewContextLines);
-	previewDelay = ini.readNumber(L"Preview", L"Delay", defaults.previewDelay);
-	previewWidthPercent = ini.readInt(L"Preview", L"WidthPercent", defaults.previewWidthPercent);
+	ini.readLayer(L"ChangeHistory", changeHistory);
+	for (int i = 0; i < kHistoryStates; ++i)
+		historyColors[i] = ini.readColor(L"ChangeHistory", kHistoryKeys[i], historyColors[i]);
+	ini.readLayer(L"Bookmarks", bookmarks);
+	ini.readLayer(L"FindMarks", findMarks);
+	ini.readLayer(L"StyleTokens", styleTokens);
+	for (int i = 0; i < kStyleTokens; ++i)
+		tokenColors[i] = ini.readColor(L"StyleTokens", (L"Color" + std::to_wstring(i + 1)).c_str(), tokenColors[i]);
+	ini.readLayer(L"OtherIndicators", otherIndicators);
+	if (ini.has(L"OtherIndicators", L"Numbers"))
+		otherIndicatorList = ini.read(L"OtherIndicators", L"Numbers");
+
+	ini.readLayer(L"CaretLine", caretLine);
+	caretLineThickness = ini.readInt(L"CaretLine", L"Thickness", caretLineThickness);
+
+	moveCaretOnClick = ini.readBool(L"Navigation", L"MoveCaretOnClick", moveCaretOnClick);
+	centerOnClick = ini.readBool(L"Navigation", L"CenterOnClick", centerOnClick);
+	flashLine = ini.readBool(L"Navigation", L"FlashLine", flashLine);
+	flashDuration = ini.readInt(L"Navigation", L"FlashDuration", flashDuration);
+	flashColor = ini.readColor(L"Navigation", L"FlashColor", flashColor);
+	scrollOnEmptyClick = ini.readBool(L"Navigation", L"ScrollOnEmptyClick", scrollOnEmptyClick);
+	wrapAround = ini.readBool(L"Navigation", L"WrapAround", wrapAround);
+	centerOnJump = ini.readBool(L"Navigation", L"CenterOnJump", centerOnJump);
+
+	previewEnabled = ini.readBool(L"Preview", L"Enabled", previewEnabled);
+	previewContextLines = ini.readInt(L"Preview", L"ContextLines", previewContextLines);
+	previewDelay = ini.readNumber(L"Preview", L"Delay", previewDelay);
+	previewWidthPercent = ini.readInt(L"Preview", L"WidthPercent", previewWidthPercent);
 
 	clamp();
 }
@@ -149,6 +218,18 @@ void Settings::save(const std::wstring& file) const {
 	const IniFile ini(file);
 
 	ini.writeBool(L"General", L"Enabled", enabled);
+	ini.write(L"General", L"Language", language == Language::English ? L"english" : language == Language::Korean ? L"korean" : L"auto");
+
+	ini.writeNumber(L"Markers", L"BarWidth", barWidth);
+	ini.writeInt(L"Markers", L"MinimumMarkerHeight", minimumMarkerHeight);
+	ini.writeColor(L"Markers", L"BackgroundColor", backgroundColor);
+	// Keys of 1.0 that moved or were replaced
+	::WritePrivateProfileStringW(L"Markers", L"OccurrenceColor", nullptr, file.c_str());
+	::WritePrivateProfileStringW(L"Markers", L"CurrentColor", nullptr, file.c_str());
+	::WritePrivateProfileStringW(L"Navigation", L"SelectOnClick", nullptr, file.c_str());
+
+	ini.writeLayer(L"Occurrences", occurrences);
+	ini.writeLayer(L"CurrentOccurrence", current);
 
 	ini.writeBool(L"Matching", L"FollowSmartHighlighting", followSmartHighlighting);
 	ini.writeChoice(L"Matching", L"MatchCase", matchCase);
@@ -158,15 +239,28 @@ void Settings::save(const std::wstring& file) const {
 	ini.writeInt(L"Matching", L"MinimumLength", minimumLength);
 	ini.writeInt(L"Matching", L"MaximumMarkers", maximumMarkers);
 
-	ini.writeNumber(L"Markers", L"BarWidth", barWidth);
-	ini.writeInt(L"Markers", L"MinimumMarkerHeight", minimumMarkerHeight);
-	ini.writeColor(L"Markers", L"OccurrenceColor", occurrenceColor);
-	ini.writeColor(L"Markers", L"CurrentColor", currentColor);
-	ini.writeColor(L"Markers", L"BackgroundColor", backgroundColor);
+	ini.writeLayer(L"ChangeHistory", changeHistory, false);
+	for (int i = 0; i < kHistoryStates; ++i)
+		ini.writeColor(L"ChangeHistory", kHistoryKeys[i], historyColors[i]);
+	ini.writeLayer(L"Bookmarks", bookmarks);
+	ini.writeLayer(L"FindMarks", findMarks);
+	ini.writeLayer(L"StyleTokens", styleTokens, false);
+	for (int i = 0; i < kStyleTokens; ++i)
+		ini.writeColor(L"StyleTokens", (L"Color" + std::to_wstring(i + 1)).c_str(), tokenColors[i]);
+	ini.writeLayer(L"OtherIndicators", otherIndicators);
+	ini.write(L"OtherIndicators", L"Numbers", otherIndicatorList);
 
-	ini.writeBool(L"Navigation", L"SelectOnClick", selectOnClick);
+	ini.writeLayer(L"CaretLine", caretLine);
+	ini.writeInt(L"CaretLine", L"Thickness", caretLineThickness);
+
+	ini.writeBool(L"Navigation", L"MoveCaretOnClick", moveCaretOnClick);
 	ini.writeBool(L"Navigation", L"CenterOnClick", centerOnClick);
+	ini.writeBool(L"Navigation", L"FlashLine", flashLine);
+	ini.writeInt(L"Navigation", L"FlashDuration", flashDuration);
+	ini.writeColor(L"Navigation", L"FlashColor", flashColor);
 	ini.writeBool(L"Navigation", L"ScrollOnEmptyClick", scrollOnEmptyClick);
+	ini.writeBool(L"Navigation", L"WrapAround", wrapAround);
+	ini.writeBool(L"Navigation", L"CenterOnJump", centerOnJump);
 
 	ini.writeBool(L"Preview", L"Enabled", previewEnabled);
 	ini.writeInt(L"Preview", L"ContextLines", previewContextLines);
@@ -175,13 +269,34 @@ void Settings::save(const std::wstring& file) const {
 }
 
 void Settings::clamp() {
-	minimumLength = std::clamp(minimumLength, 1, 1000);
-	maximumMarkers = std::clamp(maximumMarkers, 0, 10000000);
 	if (!barWidth.automatic)
 		barWidth.value = std::clamp(barWidth.value, 2, 64);
 	minimumMarkerHeight = std::clamp(minimumMarkerHeight, 1, 32);
+	minimumLength = std::clamp(minimumLength, 1, 1000);
+	maximumMarkers = std::clamp(maximumMarkers, 0, 10000000);
+	for (LayerSettings* layer : { &occurrences, &current, &changeHistory, &bookmarks, &findMarks, &styleTokens, &otherIndicators, &caretLine })
+		layer->widthPercent = std::clamp(layer->widthPercent, 5, 100);
+	caretLineThickness = std::clamp(caretLineThickness, 1, 16);
+	flashDuration = std::clamp(flashDuration, 100, 5000);
 	previewContextLines = std::clamp(previewContextLines, 0, 20);
 	if (!previewDelay.automatic)
 		previewDelay.value = std::clamp(previewDelay.value, 0, 5000);
 	previewWidthPercent = std::clamp(previewWidthPercent, 20, 100);
+}
+
+std::vector<int> Settings::otherIndicatorNumbers() const {
+	std::vector<int> numbers;
+	const wchar_t* p = otherIndicatorList.c_str();
+	while (*p && numbers.size() < 8) {
+		if (std::iswdigit(*p)) {
+			wchar_t* end = nullptr;
+			const long number = std::wcstol(p, &end, 10);
+			if (number >= 0 && number <= 35 && std::find(numbers.begin(), numbers.end(), number) == numbers.end())
+				numbers.push_back(static_cast<int>(number));
+			p = end;
+		} else {
+			++p;
+		}
+	}
+	return numbers;
 }

@@ -182,7 +182,8 @@ NppPreferences NppPreferences::load(HWND npp) {
 
 		// "Use Find dialog settings" makes smart highlighting follow the Find dialog
 		XmlElement find;
-		if (isYes(smart.attribute("useFindSettings"), false) && findElement(xml, "FindHistory", nullptr, find)) {
+		preferences.followsFindDialog = isYes(smart.attribute("useFindSettings"), false);
+		if (preferences.followsFindDialog && findElement(xml, "FindHistory", nullptr, find)) {
 			preferences.matchCase = isYes(find.attribute("matchCase"), preferences.matchCase);
 			preferences.wholeWord = isYes(find.attribute("matchWord"), preferences.wholeWord);
 		}

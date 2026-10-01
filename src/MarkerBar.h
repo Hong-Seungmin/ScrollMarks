@@ -13,26 +13,29 @@
 #include <vector>
 
 #include "Editor.h"
+#include "MarkLayers.h"
+#include "MarkScan.h"
 #include "OccurrenceSearch.h"
 
 class Plugin;
 
-struct BarColors {
-	COLORREF background = RGB(240, 240, 240);
-	COLORREF occurrence = RGB(0, 255, 0);
-	COLORREF current = RGB(0, 0, 0);
-};
-
-// The strip between the text and the vertical scrollbar of one Scintilla view.
+// The strip on the right of the vertical scrollbar of one Scintilla view.
 //
-// It owns the occurrence search of its view and draws a marker for every
-// occurrence. A marker is drawn where the top of the scrollbar thumb is when
-// its line is the first line on screen, so the marker of every line that is on
-// screen lies inside the thumb, including documents where Windows enlarges the
-// thumb to its minimum size and when scrolling beyond the last line is enabled.
+// It owns the occurrence search and the mark scan of its view and draws every
+// kind of marker in its own layer. A marker is drawn where the top of the
+// scrollbar thumb is when its line is the first line on screen, so the marker
+// of every line that is on screen lies inside the thumb, including documents
+// where Windows enlarges the thumb to its minimum size and when scrolling
+// beyond the last line is enabled.
 class MarkerBar {
 public:
-	enum TimerKind : UINT_PTR { EvaluateTimer = 1, SearchTimer = 2, HoverTimer = 3 };
+	enum TimerKind : UINT_PTR {
+		EvaluateTimer = 1,   // re-read the selection after a short pause
+		SearchTimer = 2,     // next slice of the occurrence search
+		HoverTimer = 3,      // show the preview
+		ScanDelayTimer = 4,  // start collecting marks after a pause
+		ScanTimer = 5,       // next slice of the mark scan
+	};
 
 	void attach(Plugin& plugin, HWND scintilla, int index);
 	void detach();
@@ -43,10 +46,17 @@ public:
 	// Events forwarded by the plugin
 	void onSelectionChanged();
 	void onTextChanged();
+	void onIndicatorsChanged();
+	void onMarkersChanged();
+	void onSaved();
 	void onDocumentMaybeSwitched();
 	void onSettingsChanged();
 	void onAppearanceChanged();
 	void onTimer(TimerKind kind);
+
+	// Moves the caret to the previous or next occurrence of the selected text
+	// or of the word at the caret. Returns false when there is none.
+	bool jump(bool forward);
 
 private:
 	struct Layout {
@@ -61,44 +71,62 @@ private:
 		bool operator!=(const Layout& other) const { return !(*this == other); }
 	};
 
-	enum Row : unsigned char { RowEmpty = 0, RowOccurrence = 1, RowCurrent = 2 };
+	struct Hit {
+		Layer layer = LayerCount;
+		size_t index = 0;
+		bool valid() const { return layer != LayerCount; }
+		bool operator==(const Hit& other) const { return layer == other.layer && index == other.index; }
+	};
 
 	static LRESULT CALLBACK subclassProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data);
 
 	bool shown() const;
-	bool active() const;
+	bool occurrencesActive() const;
 	int barWidth() const;
 	UINT dpi() const;
 	void refreshFrame();
 	Layout computeLayout() const;
-	RECT barRect() const;                       // window coordinates
+	RECT barRect() const;
 	bool barContains(POINT screen) const;
 
-	// Selection and search
+	// Occurrences
 	void evaluateSelection();
 	bool readSearchText(std::string& text, Sci_Position& start) const;
 	void beginSearch(std::string text, int flags, Sci_Position currentStart);
 	void continueSearch();
-	void clear();
+	void clearOccurrences();
 	void setCurrent(Sci_Position start);
 	void updateCurrentIndex();
+	void updateCaretLine();
 	void stopTimers();
+
+	// Other marks
+	void scheduleScan(unsigned sources, UINT delay);
+	void startScan();
+	void continueScan();
 
 	// Drawing
 	void onPainted();
-	void updateLines();
+	void updateOccurrenceLines();
+	void updateMarkLines(Layer layer);
+	void invalidateLines();
 	void rebuildRows();
+	void rebuildCaretRow();
+	void fillRows(Layer layer, Sci_Position displayLine, int height, unsigned char value);
 	double pixelsPerLine() const;
 	int markerHeight() const;
 	void paintNow();
-	void paint(HDC dc);
 
 	// Mouse
-	int occurrenceAt(int screenY) const;
+	Hit hitAt(POINT screen) const;
+	long long nearest(const std::vector<Sci_Position>& lines, double y, double tolerance) const;
+	Mark markOf(const Hit& hit) const;
+	std::wstring captionOf(const Hit& hit, Sci_Position line) const;
 	void onMouseMove(POINT screen);
 	void onMouseLeave();
 	void onClick(POINT screen);
-	void goTo(size_t index);
+	void goTo(const Hit& hit);
+	void scrollToLine(Sci_Position docLine, bool center);
 	void scrollTo(int screenY);
 	void showPreview();
 
@@ -107,26 +135,35 @@ private:
 	int m_index = 0;
 	sptr_t m_document = 0;
 
+	// Occurrences of the selected text
 	OccurrenceSearch m_search;
 	std::vector<Sci_Position> m_lines;   // display line of every occurrence
 	Sci_Position m_lastDocLine = -1;
 	Sci_Position m_lastDisplayLine = 0;
-	long long m_current = -1;            // index of the selected occurrence
+	long long m_current = -1;
 	Sci_Position m_currentStart = -1;
 
 	// Last seen selection, to ignore SCN_UPDATEUI that changed nothing
 	Sci_Position m_selectionStart = -1;
 	Sci_Position m_selectionEnd = -1;
 	Sci_Position m_caret = -1;
+	Sci_Position m_caretDocLine = -1;
 	bool m_textChanged = false;
 	bool m_editPending = false;
+
+	// Change history, bookmarks and indicators
+	MarkScan m_scan;
+	unsigned m_pendingScan = 0;
+	std::vector<int> m_otherIndicators;            // numbers of the last scan
+	std::vector<Sci_Position> m_markLines[LayerCount];
+	bool m_markLinesValid[LayerCount] = {};
 
 	Layout m_layout;
 	bool m_layoutValid = false;
 	double m_scale = 0;
-	std::vector<unsigned char> m_rows;   // one entry per pixel of the track
+	LayerRows m_rows;
 
 	bool m_trackingMouse = false;
-	long long m_hoverIndex = -1;
+	Hit m_hover;
 	POINT m_hoverPoint{};
 };

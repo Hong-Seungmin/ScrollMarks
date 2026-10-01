@@ -10,22 +10,23 @@
 
 #include <windows.h>
 #include <string>
+#include <vector>
 
 #include "Editor.h"
 #include "OccurrenceSearch.h"
 
 // A small popup that shows the lines around an occurrence.
 //
-// It contains its own Scintilla view that shares the document of the editor,
-// so the text, syntax colors and highlights are exactly the ones of the editor
-// without copying any text. The view is never focused and never edits.
+// It contains its own Scintilla view with its own small document: the lines
+// around the occurrence are copied with their syntax styles and indicators, and
+// every occurrence of the searched text in them is highlighted like Notepad++
+// smart highlighting does. The editor's document is never changed.
 class PreviewWindow {
 public:
 	struct Request {
-		Occurrence occurrence;
-		size_t number = 0;          // 1-based number of the occurrence
-		size_t total = 0;
-		bool totalIsLimited = false;
+		Occurrence occurrence;      // selected in the preview; empty for a whole line
+		std::vector<Occurrence> highlights;   // occurrences of the searched text near it
+		std::wstring caption;       // "Line 12    Bookmark  2 / 7"
 		int contextLines = 3;
 		int widthPercent = 60;
 		POINT anchor{};             // screen point at the left edge of the marker bar
@@ -44,7 +45,16 @@ public:
 
 private:
 	static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+	struct Segment {
+		Sci_Position sourceStart;
+		Sci_Position sourceEnd;
+		Sci_Position previewStart;
+	};
+
 	void copyAppearance(const Editor& source);
+	void fillContent(const Editor& source, const Request& request);
+	Sci_Position toPreview(Sci_Position position) const;
+	void fillIndicator(int indicator, int value, Sci_Position start, Sci_Position end);
 	void paintCaption(HDC dc) const;
 	void updateFont(UINT dpi);
 
@@ -53,8 +63,15 @@ private:
 	HWND m_viewWindow = nullptr;
 	Editor m_view;
 	HWND m_source = nullptr;
-	sptr_t m_document = 0;
 	sptr_t m_lexer = -1;
+
+	// What the preview currently shows
+	bool m_contentValid = false;
+	sptr_t m_document = 0;      // editor document it was copied from
+	Occurrence m_shown;
+	int m_shownContext = -1;
+	std::vector<Segment> m_segments;
+	int m_numberWidth = 0;
 	bool m_appearanceValid = false;
 	bool m_visible = false;
 

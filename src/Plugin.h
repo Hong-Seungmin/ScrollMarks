@@ -13,12 +13,10 @@
 
 #include "PluginInterface.h"
 #include "MarkerBar.h"
+#include "MarkLayers.h"
 #include "NppPreferences.h"
 #include "PreviewWindow.h"
 #include "Settings.h"
-
-// Notepad++ draws its smart highlighting with this Scintilla indicator.
-constexpr int kNppSmartHighlightIndicator = 29;
 
 class Plugin {
 public:
@@ -36,12 +34,14 @@ public:
 	const Settings& settings() const { return m_settings; }
 	const NppPreferences& preferences() const { return m_preferences; }
 	PreviewWindow& preview() { return m_preview; }
+	int bookmarkMarker() const { return m_bookmarkMarker; }
 
 	int searchFlags() const;
-	BarColors themeColors(const Editor& editor) const;   // colors derived from Notepad++
-	BarColors barColors(const Editor& editor) const;     // theme colors with user overrides
+	Palette palette(const Editor& editor, const Settings& settings) const;
+	BarStyle barStyle(const Editor& editor) const;
 	UINT previewDelay() const;
 	Editor currentEditor() const;
+	void flashLine(const Editor& editor, Sci_Position line);
 
 	void setTimer(int barIndex, MarkerBar::TimerKind kind, UINT milliseconds);
 	void killTimer(int barIndex, MarkerBar::TimerKind kind);
@@ -51,25 +51,42 @@ public:
 	// Menu commands
 	void toggleMarkers();
 	void openSettings();
+	void jump(bool forward);
 	void showAbout();
 
 private:
 	Plugin() = default;
 
+	void loadSettings();
+	void applyLanguage();
 	void start();
 	void stop();
 	MarkerBar* barFor(HWND hwnd);
 	void updateMenu();
+	void requestMarkerNotifications();
+	void clearFlash();
+	void prepareFlashMarker(const Editor& editor) const;
 	static LRESULT CALLBACK hostProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 	HINSTANCE m_module = nullptr;
 	NppData m_npp{};
 	Settings m_settings;
+	bool m_settingsLoaded = false;
 	NppPreferences m_preferences;
 	std::wstring m_settingsFile;
 	MarkerBar m_bars[2];
 	PreviewWindow m_preview;
 	HWND m_host = nullptr;   // message-only window that owns the timers
 	bool m_started = false;
-	FuncItem m_commands[4];
+	int m_bookmarkMarker = 20;
+	bool m_markerNotifications = false;
+
+	// Briefly highlighted line after a click
+	int m_flashMarker = -1;
+	HWND m_flashHelper = nullptr;   // hidden Scintilla to clean up a document that is no longer shown
+	sptr_t m_flashDocument = 0;
+	int m_flashHandle = -1;
+	bool m_changingFlash = false;   // ignore the marker change we cause ourselves
+
+	FuncItem m_commands[7];
 };

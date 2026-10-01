@@ -5,8 +5,12 @@
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version. See the LICENSE file for details.
+//
+// Texts in the dialogs are English placeholders: SettingsDialog sets them in
+// the user's language when the dialog opens.
 
 #include <windows.h>
+#include <commctrl.h>
 #include "resource.h"
 #include "Version.h"
 
@@ -14,64 +18,189 @@
 
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
-IDD_SETTINGS DIALOGEX 0, 0, 300, 391
+IDD_SETTINGS DIALOGEX 0, 0, 400, 368
 STYLE DS_SETFONT | DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "ScrollMarks Settings"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    GROUPBOX        "Matching", -1, 7, 7, 286, 131
-    CONTROL         "&Show markers next to the scrollbar", IDC_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 14, 20, 272, 10
-    CONTROL         "Only while Notepad++ s&mart highlighting is enabled", IDC_FOLLOW_SMART, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 14, 33, 272, 10
-    LTEXT           "Match &case:", -1, 14, 50, 84, 8
-    COMBOBOX        IDC_MATCH_CASE, 102, 48, 130, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "&Whole word only:", -1, 14, 66, 84, 8
-    COMBOBOX        IDC_WHOLE_WORD, 102, 64, 130, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "Minimum &length:", -1, 14, 82, 84, 8
-    EDITTEXT        IDC_MIN_LENGTH, 102, 80, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
-    LTEXT           "characters", -1, 142, 82, 80, 8
-    LTEXT           "Ma&ximum markers:", -1, 14, 98, 84, 8
-    EDITTEXT        IDC_MAX_MARKERS, 102, 96, 50, 12, ES_NUMBER | ES_AUTOHSCROLL
-    LTEXT           "0 = no limit", -1, 156, 98, 80, 8
-    CONTROL         "Mark the word at the caret when nothing is selected", IDC_WORD_AT_CARET, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 14, 112, 272, 10
-    CONTROL         "Mark large files even when Notepad++ restricts smart highlighting", IDC_LARGE_FILES, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 14, 125, 272, 10
+    CONTROL         "", IDC_TABS, "SysTabControl32", WS_TABSTOP, 7, 7, 386, 196
 
-    GROUPBOX        "Markers", -1, 7, 144, 286, 96
-    LTEXT           "&Bar width:", -1, 14, 157, 84, 8
-    EDITTEXT        IDC_BAR_WIDTH, 102, 155, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
-    LTEXT           "px", -1, 142, 157, 14, 8
-    CONTROL         "Automatic", IDC_BAR_WIDTH_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 162, 156, 100, 10
-    LTEXT           "Minimum marker &height:", -1, 14, 173, 84, 8
-    EDITTEXT        IDC_MARKER_HEIGHT, 102, 171, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
-    LTEXT           "px", -1, 142, 173, 14, 8
-    LTEXT           "&Occurrences:", -1, 14, 189, 84, 8
-    PUSHBUTTON      "", IDC_OCCURRENCE_COLOR, 102, 187, 36, 13, BS_OWNERDRAW | WS_TABSTOP
-    CONTROL         "Automatic", IDC_OCCURRENCE_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 162, 189, 120, 10
-    LTEXT           "Current occu&rrence:", -1, 14, 206, 84, 8
-    PUSHBUTTON      "", IDC_CURRENT_COLOR, 102, 204, 36, 13, BS_OWNERDRAW | WS_TABSTOP
-    CONTROL         "Automatic", IDC_CURRENT_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 162, 206, 120, 10
-    LTEXT           "Backgro&und:", -1, 14, 223, 84, 8
-    PUSHBUTTON      "", IDC_BACKGROUND_COLOR, 102, 221, 36, 13, BS_OWNERDRAW | WS_TABSTOP
-    CONTROL         "Automatic", IDC_BACKGROUND_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 162, 223, 120, 10
+    GROUPBOX        "Hover preview", IDC_T_HOVER_GROUP, 7, 209, 252, 128
+    CONTROL         "Show a preview when hovering a marker", IDC_PREVIEW, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 14, 223, 238, 10
+    LTEXT           "Context lines:", IDC_T_CONTEXT_LINES, 14, 242, 80, 8
+    EDITTEXT        IDC_CONTEXT_LINES, 98, 240, 30, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "above and below", IDC_T_ABOVE_BELOW, 132, 242, 120, 8
+    LTEXT           "Hover delay:", IDC_T_HOVER_DELAY, 14, 260, 80, 8
+    EDITTEXT        IDC_PREVIEW_DELAY, 98, 258, 30, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "ms", IDC_T_MS1, 132, 260, 14, 8
+    CONTROL         "Automatic", IDC_PREVIEW_DELAY_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 150, 259, 100, 10
+    LTEXT           "Preview width:", IDC_T_PREVIEW_WIDTH, 14, 278, 80, 8
+    EDITTEXT        IDC_PREVIEW_WIDTH, 98, 276, 30, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "% of the editor", IDC_T_PERCENT_EDITOR, 132, 278, 120, 8
 
-    GROUPBOX        "Click and preview", -1, 7, 246, 286, 116
-    CONTROL         "Clicking a marker selects the occurrence", IDC_SELECT_ON_CLICK, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 14, 259, 272, 10
-    CONTROL         "Clicking a marker centers its line", IDC_CENTER_ON_CLICK, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 14, 272, 272, 10
-    CONTROL         "Clicking an empty spot scrolls there", IDC_SCROLL_ON_EMPTY, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 14, 285, 272, 10
-    CONTROL         "Show a &preview when hovering a marker", IDC_PREVIEW, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 14, 298, 272, 10
-    LTEXT           "Con&text lines:", -1, 14, 313, 84, 8
-    EDITTEXT        IDC_CONTEXT_LINES, 102, 311, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
-    LTEXT           "above and below", -1, 142, 313, 100, 8
-    LTEXT           "Hover &delay:", -1, 14, 329, 84, 8
-    EDITTEXT        IDC_PREVIEW_DELAY, 102, 327, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
-    LTEXT           "ms", -1, 142, 329, 14, 8
-    CONTROL         "Automatic", IDC_PREVIEW_DELAY_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 162, 328, 100, 10
-    LTEXT           "Preview wi&dth:", -1, 14, 345, 84, 8
-    EDITTEXT        IDC_PREVIEW_WIDTH, 102, 343, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
-    LTEXT           "% of the editor", -1, 142, 345, 100, 8
+    GROUPBOX        "Sample", IDC_T_SAMPLE_GROUP, 265, 209, 128, 128
+    CONTROL         "", IDC_SAMPLE, "Static", SS_OWNERDRAW, 272, 221, 114, 110
 
-    PUSHBUTTON      "R&eset to defaults", IDC_RESET, 7, 370, 76, 14
-    DEFPUSHBUTTON   "OK", IDOK, 186, 370, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 243, 370, 50, 14
+    PUSHBUTTON      "Reset to defaults", IDC_RESET, 7, 346, 90, 14
+    DEFPUSHBUTTON   "OK", IDOK, 286, 346, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 343, 346, 50, 14
+END
+
+IDD_PAGE_GENERAL DIALOGEX 0, 0, 372, 170
+STYLE DS_SETFONT | DS_SHELLFONT | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "Show markers next to the scrollbar", IDC_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 8, 356, 10
+    LTEXT           "Language:", IDC_T_LANGUAGE, 8, 28, 100, 8
+    COMBOBOX        IDC_LANGUAGE, 112, 26, 120, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Bar width:", IDC_T_BAR_WIDTH, 8, 46, 100, 8
+    EDITTEXT        IDC_BAR_WIDTH, 112, 44, 30, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "px", IDC_T_PX1, 146, 46, 14, 8
+    CONTROL         "Automatic", IDC_BAR_WIDTH_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 164, 45, 100, 10
+    LTEXT           "Minimum marker height:", IDC_T_MARKER_HEIGHT, 8, 64, 100, 8
+    EDITTEXT        IDC_MARKER_HEIGHT, 112, 62, 30, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "px", IDC_T_PX2, 146, 64, 14, 8
+    LTEXT           "Background:", IDC_T_BACKGROUND, 8, 82, 100, 8
+    PUSHBUTTON      "", IDC_BACKGROUND_COLOR, 112, 80, 30, 13, BS_OWNERDRAW | WS_TABSTOP
+    CONTROL         "Automatic", IDC_BACKGROUND_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 164, 82, 100, 10
+    LTEXT           "", IDC_T_PRIORITY, 8, 106, 356, 50
+END
+
+IDD_PAGE_OCCURRENCES DIALOGEX 0, 0, 372, 170
+STYLE DS_SETFONT | DS_SHELLFONT | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "Mark every occurrence of the selected text", IDC_OCC_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 6, 356, 10
+    CONTROL         "Only while Notepad++ smart highlighting is enabled", IDC_FOLLOW_SMART, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 19, 356, 10
+    LTEXT           "Match case:", IDC_T_MATCH_CASE, 8, 36, 84, 8
+    COMBOBOX        IDC_MATCH_CASE, 96, 34, 112, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Whole word only:", IDC_T_WHOLE_WORD, 8, 52, 84, 8
+    COMBOBOX        IDC_WHOLE_WORD, 96, 50, 112, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Minimum length:", IDC_T_MIN_LENGTH, 216, 36, 70, 8
+    EDITTEXT        IDC_MIN_LENGTH, 290, 34, 30, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "characters", IDC_T_CHARACTERS, 324, 36, 44, 8
+    LTEXT           "Maximum markers:", IDC_T_MAX_MARKERS, 216, 52, 70, 8
+    EDITTEXT        IDC_MAX_MARKERS, 290, 50, 44, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "0 = no limit", IDC_T_NO_LIMIT, 290, 64, 78, 8
+    CONTROL         "Mark the word at the caret when nothing is selected", IDC_WORD_AT_CARET, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 96, 356, 10
+    CONTROL         "Mark large files even when Notepad++ restricts smart highlighting", IDC_LARGE_FILES, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 109, 356, 10
+    LTEXT           "Color", IDC_T_COLOR1, 96, 126, 60, 8
+    LTEXT           "Position", IDC_T_POSITION1, 196, 126, 60, 8
+    LTEXT           "Width", IDC_T_WIDTH1, 262, 126, 40, 8
+    LTEXT           "Occurrences:", IDC_T_OCC, 8, 140, 84, 8
+    PUSHBUTTON      "", IDC_OCC_COLOR, 96, 138, 28, 13, BS_OWNERDRAW | WS_TABSTOP
+    CONTROL         "Automatic", IDC_OCC_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 128, 140, 64, 10
+    COMBOBOX        IDC_OCC_POSITION, 196, 138, 60, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_OCC_WIDTH, 262, 138, 26, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "%", IDC_T_PCT1, 291, 140, 10, 8
+    LTEXT           "Selected occurrence:", IDC_T_CUR, 8, 158, 84, 8
+    PUSHBUTTON      "", IDC_CUR_COLOR, 96, 156, 28, 13, BS_OWNERDRAW | WS_TABSTOP
+    CONTROL         "Automatic", IDC_CUR_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 128, 158, 64, 10
+    COMBOBOX        IDC_CUR_POSITION, 196, 156, 60, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_CUR_WIDTH, 262, 156, 26, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "%", IDC_T_PCT2, 291, 158, 10, 8
+    LTEXT           "", IDC_T_WHOLE_WORD_WARNING, 8, 74, 356, 18, NOT WS_VISIBLE
+END
+
+IDD_PAGE_MARKS DIALOGEX 0, 0, 372, 170
+STYLE DS_SETFONT | DS_SHELLFONT | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "Color", IDC_T_COLOR2, 110, 6, 60, 8
+    LTEXT           "Position", IDC_T_POSITION2, 232, 6, 60, 8
+    LTEXT           "Width", IDC_T_WIDTH2, 298, 6, 40, 8
+
+    CONTROL         "Change history", IDC_HIST_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 20, 100, 10
+    COMBOBOX        IDC_HIST_POSITION, 232, 18, 60, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_HIST_WIDTH, 298, 18, 26, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "%", IDC_T_PCT3, 327, 20, 10, 8
+    LTEXT           "Modified", IDC_T_HIST_MODIFIED, 20, 36, 40, 8
+    PUSHBUTTON      "", IDC_HIST_COLOR1, 62, 34, 22, 12, BS_OWNERDRAW | WS_TABSTOP
+    LTEXT           "Saved", IDC_T_HIST_SAVED, 90, 36, 32, 8
+    PUSHBUTTON      "", IDC_HIST_COLOR2, 124, 34, 22, 12, BS_OWNERDRAW | WS_TABSTOP
+    LTEXT           "Reverted", IDC_T_HIST_REVERTED, 152, 36, 40, 8
+    PUSHBUTTON      "", IDC_HIST_COLOR3, 194, 34, 22, 12, BS_OWNERDRAW | WS_TABSTOP
+    LTEXT           "Reverted to modified", IDC_T_HIST_REVERTED_MOD, 222, 36, 64, 8
+    PUSHBUTTON      "", IDC_HIST_COLOR4, 288, 34, 22, 12, BS_OWNERDRAW | WS_TABSTOP
+    CONTROL         "Automatic", IDC_HIST_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 316, 36, 54, 10
+
+    CONTROL         "Bookmarks", IDC_BOOK_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 56, 100, 10
+    PUSHBUTTON      "", IDC_BOOK_COLOR, 110, 54, 28, 13, BS_OWNERDRAW | WS_TABSTOP
+    CONTROL         "Automatic", IDC_BOOK_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 142, 56, 80, 10
+    COMBOBOX        IDC_BOOK_POSITION, 232, 54, 60, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_BOOK_WIDTH, 298, 54, 26, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "%", IDC_T_PCT4, 327, 56, 10, 8
+
+    CONTROL         "Find mark results", IDC_FIND_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 74, 100, 10
+    PUSHBUTTON      "", IDC_FIND_COLOR, 110, 72, 28, 13, BS_OWNERDRAW | WS_TABSTOP
+    CONTROL         "Automatic", IDC_FIND_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 142, 74, 80, 10
+    COMBOBOX        IDC_FIND_POSITION, 232, 72, 60, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_FIND_WIDTH, 298, 72, 26, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "%", IDC_T_PCT5, 327, 74, 10, 8
+
+    CONTROL         "Style tokens", IDC_TOKEN_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 92, 100, 10
+    COMBOBOX        IDC_TOKEN_POSITION, 232, 90, 60, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_TOKEN_WIDTH, 298, 90, 26, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "%", IDC_T_PCT6, 327, 92, 10, 8
+    LTEXT           "1", -1, 20, 108, 8, 8
+    PUSHBUTTON      "", IDC_TOKEN_COLOR1, 30, 106, 22, 12, BS_OWNERDRAW | WS_TABSTOP
+    LTEXT           "2", -1, 60, 108, 8, 8
+    PUSHBUTTON      "", IDC_TOKEN_COLOR2, 70, 106, 22, 12, BS_OWNERDRAW | WS_TABSTOP
+    LTEXT           "3", -1, 100, 108, 8, 8
+    PUSHBUTTON      "", IDC_TOKEN_COLOR3, 110, 106, 22, 12, BS_OWNERDRAW | WS_TABSTOP
+    LTEXT           "4", -1, 140, 108, 8, 8
+    PUSHBUTTON      "", IDC_TOKEN_COLOR4, 150, 106, 22, 12, BS_OWNERDRAW | WS_TABSTOP
+    LTEXT           "5", -1, 180, 108, 8, 8
+    PUSHBUTTON      "", IDC_TOKEN_COLOR5, 190, 106, 22, 12, BS_OWNERDRAW | WS_TABSTOP
+    CONTROL         "Automatic", IDC_TOKEN_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 222, 108, 80, 10
+
+    CONTROL         "Other indicators", IDC_OTHER_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 128, 100, 10
+    PUSHBUTTON      "", IDC_OTHER_COLOR, 110, 126, 28, 13, BS_OWNERDRAW | WS_TABSTOP
+    CONTROL         "Automatic", IDC_OTHER_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 142, 128, 80, 10
+    COMBOBOX        IDC_OTHER_POSITION, 232, 126, 60, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_OTHER_WIDTH, 298, 126, 26, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "%", IDC_T_PCT7, 327, 128, 10, 8
+    LTEXT           "Numbers:", IDC_T_OTHER_NUMBERS, 20, 146, 40, 8
+    EDITTEXT        IDC_OTHER_LIST, 62, 144, 70, 12, ES_AUTOHSCROLL
+    LTEXT           "Scintilla indicator numbers, e.g. 9, 19", IDC_T_OTHER_HINT, 138, 146, 230, 8
+END
+
+IDD_PAGE_CARET DIALOGEX 0, 0, 372, 170
+STYLE DS_SETFONT | DS_SHELLFONT | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "Show a line at the caret position", IDC_CARET_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 8, 356, 10
+    LTEXT           "Color:", IDC_T_CARET_COLOR, 8, 28, 84, 8
+    PUSHBUTTON      "", IDC_CARET_COLOR, 96, 26, 28, 13, BS_OWNERDRAW | WS_TABSTOP
+    CONTROL         "Automatic", IDC_CARET_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 128, 28, 100, 10
+    LTEXT           "Thickness:", IDC_T_CARET_THICKNESS, 8, 46, 84, 8
+    EDITTEXT        IDC_CARET_THICKNESS, 96, 44, 28, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "px", IDC_T_PX3, 128, 46, 14, 8
+    LTEXT           "Position:", IDC_T_CARET_POSITION, 8, 64, 84, 8
+    COMBOBOX        IDC_CARET_POSITION, 96, 62, 60, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Width:", IDC_T_CARET_WIDTH, 8, 82, 84, 8
+    EDITTEXT        IDC_CARET_WIDTH, 96, 80, 28, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "%", IDC_T_PCT8, 128, 82, 10, 8
+END
+
+IDD_PAGE_NAVIGATION DIALOGEX 0, 0, 372, 170
+STYLE DS_SETFONT | DS_SHELLFONT | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "Clicking a marker also moves the caret there", IDC_MOVE_CARET, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 8, 356, 10
+    CONTROL         "Center the line on click", IDC_CENTER_ON_CLICK, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 21, 356, 10
+    CONTROL         "Briefly highlight the line after a click", IDC_FLASH, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 34, 356, 10
+    LTEXT           "Duration:", IDC_T_FLASH_DURATION, 20, 50, 60, 8
+    EDITTEXT        IDC_FLASH_DURATION, 84, 48, 34, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "ms", IDC_T_MS2, 122, 50, 14, 8
+    LTEXT           "Color:", IDC_T_FLASH_COLOR, 150, 50, 40, 8
+    PUSHBUTTON      "", IDC_FLASH_COLOR, 192, 48, 28, 13, BS_OWNERDRAW | WS_TABSTOP
+    CONTROL         "Automatic", IDC_FLASH_COLOR_AUTO, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 224, 50, 100, 10
+    CONTROL         "Clicking an empty spot scrolls there", IDC_SCROLL_ON_EMPTY, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 66, 356, 10
+    GROUPBOX        "Previous / next occurrence", IDC_T_JUMP_GROUP, 8, 84, 356, 76
+    CONTROL         "Continue from the other end of the document", IDC_WRAP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 16, 98, 340, 10
+    CONTROL         "Center the line after moving", IDC_CENTER_ON_JUMP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 16, 111, 340, 10
+    LTEXT           "", IDC_T_SHORTCUT, 16, 128, 340, 26
 END
 
 VS_VERSION_INFO VERSIONINFO

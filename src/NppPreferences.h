@@ -20,6 +20,7 @@ struct NppPreferences {
 	bool smartHighlighting = true;
 	bool matchCase = false;
 	bool wholeWord = true;
+	bool followsFindDialog = false;   // "Use Find dialog settings"
 
 	bool largeFileRestriction = true;
 	bool largeFileAllowsSmartHighlighting = false;

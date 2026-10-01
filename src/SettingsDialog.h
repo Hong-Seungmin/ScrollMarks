@@ -9,12 +9,17 @@
 #pragma once
 
 #include <windows.h>
+#include <vector>
 
-#include "MarkerBar.h"
+#include "Editor.h"
+#include "MarkLayers.h"
 #include "Settings.h"
 
 class Plugin;
 
+// Tabbed settings dialog. The hover preview settings and a sample of the bar
+// sit below the tabs, so they are visible on every tab and the sample shows
+// every change at once.
 class SettingsDialog {
 public:
 	SettingsDialog(Plugin& plugin, const Settings& settings);
@@ -24,24 +29,59 @@ public:
 	const Settings& settings() const { return m_settings; }
 
 private:
-	static INT_PTR CALLBACK dialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+	static constexpr int kPageCount = 5;
+
+	struct ColorSlot {
+		int button;
+		int autoBox;
+		ColorChoice* choice;
+		COLORREF automatic;
+	};
+
+	struct LayerRow {
+		int enabledBox;   // 0 when the row has no own switch
+		int positionCombo;
+		int widthEdit;
+		LayerSettings* layer;
+	};
+
+	static INT_PTR CALLBACK frameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+	static INT_PTR CALLBACK pageProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 	INT_PTR handle(UINT message, WPARAM wParam, LPARAM lParam);
 
-	void fillChoice(int id, bool notepadValue, Choice value);
+	HWND control(int id) const;
+	bool checked(int id) const;
+	void check(int id, bool value);
+	int number(int id, int fallback) const;
+	void setNumber(int id, int value);
+	void enable(int id, bool value);
+
+	void createPages();
+	void showPage(int index);
+	void applyTexts();
+	void fillCombos();
 	void load();
 	void store();
 	void updateControls();
-	void pickColor(int buttonId);
-	void drawColorButton(const DRAWITEMSTRUCT& item) const;
-	ColorChoice& colorFor(int buttonId);
-	COLORREF shownColor(int buttonId) const;
-	COLORREF shownColorFor(int buttonId, bool automatic) const;
+	void changed();
+
+	std::vector<ColorSlot> colorSlots();
+	std::vector<LayerRow> layerRows();
+	void colorAutoClicked(int autoBox);
+	void pickColor(int button);
+	void drawColorButton(const DRAWITEMSTRUCT& item);
+	void drawSample(const DRAWITEMSTRUCT& item);
 	int automaticBarWidth() const;
 	int automaticPreviewDelay() const;
 
 	Plugin& m_plugin;
 	Settings m_settings;
-	BarColors m_themeColors;
+	Editor m_editor;
+	Palette m_palette;
+	HINSTANCE m_module = nullptr;
 	HWND m_hwnd = nullptr;
+	HWND m_pages[kPageCount] = {};
+	int m_page = 0;
+	bool m_loading = false;
 	COLORREF m_customColors[16] = {};
 };

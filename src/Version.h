@@ -12,10 +12,10 @@
 // Keep the numbers and the strings in sync. The resource compiler cannot
 // build the strings from the numbers.
 #define SCROLLMARKS_VERSION_MAJOR 1
-#define SCROLLMARKS_VERSION_MINOR 0
+#define SCROLLMARKS_VERSION_MINOR 1
 #define SCROLLMARKS_VERSION_PATCH 0
-#define SCROLLMARKS_VERSION_STRING "1.0.0"
-#define SCROLLMARKS_VERSION_WSTRING L"1.0.0"
+#define SCROLLMARKS_VERSION_STRING "1.1.0"
+#define SCROLLMARKS_VERSION_WSTRING L"1.1.0"
 
 #define SCROLLMARKS_NAME L"ScrollMarks"
 #define SCROLLMARKS_HOMEPAGE L"https://github.com/Hong-Seungmin/ScrollMarks"
